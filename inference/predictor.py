@@ -9,19 +9,17 @@ class Predictor:
         self.device = device
 
     def predict(self, buffer):
-        if torch.cuda.is_available():
-            tensor = buffer.to(self.device)
-        else:
-            tensor = buffer.to(self.device)
+        tensor = buffer.to(self.device)
         start = time.time()
         with torch.no_grad():
             out = self.model(tensor)
             probs = torch.softmax(out, dim=1)[0]
+            # probs = torch.sigmoid(out)[0]
             top5 = torch.topk(probs, 1)
         end = time.time()
 
         results = [
-            {"class": self.classnames[int(idx)], "score": float(score*100)}
+            {"class": self.classnames[int(idx)], "score": float(score)}
             for idx, score in zip(top5.indices, top5.values)
         ]
         inference_time = end - start

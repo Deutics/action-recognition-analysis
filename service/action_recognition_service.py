@@ -19,12 +19,14 @@ class ActionRecognitionService:
     """
 
     def __init__(self, model_name, video_source, class_csv, device=None):
-        self.device = device or torch.device("cpu")
+        if torch.cuda.is_available():
+            self.device = torch.device(device if device else "cuda:0")
+        else:
+            self.device= torch.device("cpu")
         self.model_name = model_name
         print(f"Loaded model {model_name} for video source {video_source}")
         self.video_source = video_source
         self.class_csv = class_csv
-
         self.model = None
         self.T = None
         self.img_size = None
