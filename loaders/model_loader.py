@@ -1,3 +1,4 @@
+# loaders/model_loader.py
 import importlib
 from configs.model_registry import MODEL_REGISTRY
 

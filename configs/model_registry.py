@@ -1,3 +1,4 @@
+# configs/model_registry.py
 MODEL_REGISTRY = {
     # pytorchvideo models → all use same loader so thats why using same module
     "x3d_s": {

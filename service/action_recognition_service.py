@@ -1,3 +1,4 @@
+# service/action_recognition_service
 import torch
 import cv2
 from time import sleep
@@ -74,9 +75,9 @@ class ActionRecognitionService:
         print(f"[INFO] Running live inference on → {self.video_source}")
 
         while True:
-            frame = self.stream_handler.read_frame()
+            frame,motion_flag = self.stream_handler.read_frame()
 
-            if frame is None:
+            if frame is None or motion_flag==False:
                 sleep(0.01)
                 continue
 

@@ -1,3 +1,4 @@
+# main.py
 from multiprocessing import Process
 from service.action_recognition_service import ActionRecognitionService
 
@@ -20,8 +21,9 @@ def run_action_service(model_name, source, class_csv):
 if __name__ == "__main__":
     # Required for Windows multiprocessing
     streams = [
-        {"source": "rtsp://media.camzify.live:8554/73", "model": "x3d_s"},
-        {"source": "rtsp://media.camzify.live:8554/74", "model": "x3d_m"},
+        # {"source": "https://media.camzify.live:8888/73/index.m3u8", "model": "x3d_s"},
+        {"source": "https://media.camzify.live:8888/74/index.m3u8", "model": "x3d_m"},
+        # {"source": 0, "model": "x3d_m"},
     ]
 
     processes = []

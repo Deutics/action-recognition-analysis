@@ -1,3 +1,4 @@
+# loader/classnames_loader.py
 import csv
 
 class ClassNamesLoader:
