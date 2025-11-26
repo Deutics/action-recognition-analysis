@@ -4,8 +4,11 @@ import cv2
 from time import sleep
 from loaders.model_loader import ModelLoader
 from loaders.classnames_loader import ClassNamesLoader
+from utils.action_notification import ActionNotification
+from utils.notification_manager import NotificationManager
 from utils.visulaization import overlay_predictions
 from stream.stream_handler import StreamHandler
+from utils.expected_actions import VALID_KINETICS_ACTIONS
 
 
 class ActionRecognitionService:
@@ -17,7 +20,9 @@ class ActionRecognitionService:
         - models requiring temporal buffers (T) OR single-frame models
     """
 
-    def __init__(self, model_name, video_source, class_csv, device=None):
+    def __init__(self, model_name, video_source,stream_id, class_csv, device=None):
+        self.notification_manager = None
+        self.expected_actions = VALID_KINETICS_ACTIONS
         if torch.cuda.is_available():
             self.device = torch.device(device if device else "cuda:0")
         else:
@@ -25,6 +30,7 @@ class ActionRecognitionService:
 
         self.model_name = model_name
         self.video_source = video_source
+        self.stream_id = stream_id
         self.class_csv = class_csv
 
         # Dynamic components (loader decides what is needed)
@@ -43,6 +49,9 @@ class ActionRecognitionService:
     # ---------------------------------------------------
     def initialize(self):
         """ Initialize everything safely for multiprocessing. """
+
+        #Notification Manager
+        self.notification_manager = NotificationManager(self.stream_id,self.expected_actions)
 
         # Load class names
         self.classnames = ClassNamesLoader(self.class_csv).load()
@@ -133,7 +142,13 @@ class ActionRecognitionService:
                     preds, infer_t = self._run_prediction(tensor)
 
                     fps = 1 / infer_t if infer_t > 0 else 0
-                    frame = overlay_predictions(frame, preds, fps)
+                    annotated_frame = overlay_predictions(frame, preds, fps)
+
+                    snap = self.notification_manager.update(preds, annotated_frame)
+
+                    if snap is not None:
+                        notification = ActionNotification(self.stream_id, snap)
+                        notification.register()
 
             # ---------------------------------------------
             # 3. Show result

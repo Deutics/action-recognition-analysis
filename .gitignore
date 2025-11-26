@@ -3,6 +3,9 @@ model_results.json
 *.__pycache__
 *.rar
 *.h5
+*.jpg
+*.jpeg
+*.png
 
 *.ts
 *.mp4
