@@ -22,7 +22,7 @@ if __name__ == "__main__":
     # Required for Windows multiprocessing
     streams = [
         # {"source": "https://media.camzify.live:8888/73/index.m3u8", "model": "c2d_r50"},
-        {"source": "https://media.camzify.live:8888/74/index.m3u8", "model": "c2d_r50"},
+        {"source": "https://media.camzify.live:8888/74/index.m3u8", "model": "slowfast_r50"},
         # {"source": 0, "model": "c2d_r50"},
     ]
 

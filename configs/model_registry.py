@@ -29,4 +29,8 @@ MODEL_REGISTRY = {
         "module": "loaders.pytorchvideo_loader.pytorchvideo_loader",
         "class": "PyTorchVideoLoader"
     },
+    "slowfast_r50": {
+            "module": "loaders.slowfast_loader.slowfast_loader",
+            "class": "SlowFastLoader"
+        },
 }
