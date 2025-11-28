@@ -6,5 +6,5 @@ class BaseModelLoader(ABC):
 
     @abstractmethod
     def load(self):
-        """Load and return (model, T, img_size)."""
+        """Load and return (model, frame_window_size, img_size)."""
         pass

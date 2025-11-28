@@ -1,4 +1,11 @@
 # configs/model_registry.py
+
+"""
+Model registry mapping model names to their loader modules and classes.
+
+Used for dynamic model loading across the codebase.
+"""
+
 MODEL_REGISTRY = {
     # pytorchvideo models → all use same loader so thats why using same module
     "x3d_s": {

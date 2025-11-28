@@ -1,48 +1,68 @@
 # stream/stream_handler.py
 import cv2
 import time
-from .motion_detector import MotionDetection
+from .motion_detector import MotionDetector
+from utils.logger import get_logger
+logger = get_logger(__name__)
+
 
 class StreamHandler:
-    """Handles video capture from webcam, RTSP, or file, with motion filtering and auto-reconnect."""
+    """
+    Handles video capture from webcam, RTSP, or file.
+    Includes motion detection and auto-reconnect on failure.
+    """
 
-    def __init__(self, source, max_retries=5, retry_delay=2.0):
+    def __init__(self, source: str, max_retries: int = 5, retry_delay: float = 2.0):
         self.source = source
-        self.cap = None
-        self.motion_detector = MotionDetection()
+        self.capture = None
+        self.motion_detector = MotionDetector()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.retry_count = 0
 
-    def start(self):
-        self.cap = cv2.VideoCapture(self.source)
+    def start_stream(self):
+        """Initialize video capture with retries."""
+        self.capture = cv2.VideoCapture(self.source)
         retries = 0
-        while not self.cap.isOpened() and retries < self.max_retries:
-            print(f"[WARN] Cannot open stream {self.source}, retrying in {self.retry_delay}s")
+
+        while not self.capture.isOpened() and retries < self.max_retries:
+            logger.warning(
+                f"Cannot open stream '{self.source}', retrying in {self.retry_delay}s (Attempt {retries + 1})"
+            )
             time.sleep(self.retry_delay)
-            self.cap.release()
-            self.cap = cv2.VideoCapture(self.source)
+            self.capture.release()
+            self.capture = cv2.VideoCapture(self.source)
             retries += 1
-        if not self.cap.isOpened():
+
+        if not self.capture.isOpened():
+            logger.error(f"Failed to open video source after {retries} attempts: {self.source}")
             raise ValueError(f"Cannot open video source: {self.source}")
-        print(f"[INFO] Stream opened: {self.source}")
+
+        logger.info(f"Stream successfully opened: {self.source}")
 
     def read_frame(self):
-        if self.cap is None:
-            raise ValueError("Capture not started")
+        """
+        Read a frame from the video source.
+        Returns:
+            tuple: (frame, motion_detected)
+        """
+        if self.capture is None:
+            logger.error("Attempted to read frame before starting the stream.")
+            raise ValueError("Capture not started. Call 'start_stream()' first.")
 
-        ret, frame = self.cap.read()
+        ret, frame = self.capture.read()
         if not ret:
-            # Auto-reconnect logic
-            self.cap.release()
+            logger.warning(f"Failed to read frame from '{self.source}', attempting reconnect...")
+            self.capture.release()
             time.sleep(self.retry_delay)
-            self.cap = cv2.VideoCapture(self.source)
-            return None
+            self.capture = cv2.VideoCapture(self.source)
+            return None, False
 
-        # Detect motion, but always return frame
-        motion_flag = self.motion_detector.detect(frame)
-        return frame, motion_flag
+        motion_detected = self.motion_detector.detect_motion(frame)
+        return frame, motion_detected
 
-    def release(self):
-        if self.cap:
-            self.cap.release()
+    def release_stream(self):
+        """Release the video capture resource."""
+        if self.capture:
+            self.capture.release()
+            logger.info(f"Stream released: {self.source}")

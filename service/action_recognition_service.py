@@ -6,193 +6,173 @@ from loaders.model_loader import ModelLoader
 from loaders.classnames_loader import ClassNamesLoader
 from utils.action_notification import ActionNotification
 from utils.notification_manager import NotificationManager
+from inference.inference_engine import InferenceEngine
+from preprocessing.frame_buffer import FrameBuffer
 from utils.visulaization import overlay_predictions
 from stream.stream_handler import StreamHandler
 from utils.expected_actions import VALID_KINETICS_ACTIONS
+from utils.logger import get_logger
+logger = get_logger(__name__)
 
 
 class ActionRecognitionService:
-    """
-    Fully model-agnostic inference service.
-    Supports:
-        - models with OR without preprocessors
-        - models with OR without predictors
-        - models requiring temporal buffers (T) OR single-frame models
-    """
 
-    def __init__(self, model_name, video_source,stream_id, class_csv, device=None):
-        self.notification_manager = None
-        self.expected_actions = VALID_KINETICS_ACTIONS
-        if torch.cuda.is_available():
-            self.device = torch.device(device if device else "cuda:0")
-        else:
-            self.device = torch.device("cpu")
-
+    def __init__(self, model_name, video_source, stream_id, class_csv, device=None):
         self.model_name = model_name
         self.video_source = video_source
         self.stream_id = stream_id
         self.class_csv = class_csv
 
-        # Dynamic components (loader decides what is needed)
+        if torch.cuda.is_available():
+            self.device = torch.device(device if device else "cuda:0")
+        else:
+            self.device = torch.device("cpu")
+
+        self.notification_manager = None
+        self.expected_actions = VALID_KINETICS_ACTIONS
         self.model = None
-        self.T = None               # Number of frames required (SlowFast=32, others=None)
+        self.frame_window_size = None
         self.img_size = None
-        self.classnames = None
-        self.preprocessor = None    # Can be None
-        self.predictor = None       # Can be None
-        self.stream_handler = None
+        self.preprocessor= None
+        self.predictor= None
 
-        self.buffer = []            # Used ONLY when T is not None
+        logger.info(
+            f"Initialized service object | model={model_name} | stream={stream_id} | source={video_source}"
+        )
 
-    # ---------------------------------------------------
-    # Initialization Phase
-    # ---------------------------------------------------
     def initialize(self):
-        """ Initialize everything safely for multiprocessing. """
-
-        #Notification Manager
-        self.notification_manager = NotificationManager(self.stream_id,self.expected_actions)
-
-        # Load class names
+        logger.info("Loading classnames...")
         self.classnames = ClassNamesLoader(self.class_csv).load()
+        logger.info("Classnames loaded successfully.")
 
-        # Load model + components
+        logger.info(f"Loading model components for {self.model_name} on {self.device}...")
         loader = ModelLoader(self.model_name, self.device, self.classnames)
-        self.model, self.T, self.img_size, self.preprocessor, self.predictor = loader.load()
 
-        # Stream
+        (
+            self.model,
+            self.frame_window_size,
+            self.img_size,
+            self.preprocessor,
+            self.predictor
+        ) = loader.load()
+
+        logger.info(
+            f"Model loaded | Requires T frames: {self.frame_window_size} | Preprocessor: {type(self.preprocessor).__name__ if self.preprocessor else 'None'} "
+            f"| Predictor: {type(self.predictor).__name__ if self.predictor else 'None'}"
+        )
+
+        # Frame buffer
+        if self.frame_window_size:
+            self.frame_buffer = FrameBuffer(self.frame_window_size)
+            logger.debug(f"FrameBuffer initialized with size T={self.frame_window_size}")
+        else:
+            self.frame_buffer = None
+            logger.debug("FrameBuffer not required for this model.")
+
+        # Inference engine
+        self.inference_engine = InferenceEngine(self.model, self.predictor, self.device)
+
+        # Notification Manager
+        self.notification_manager = NotificationManager(self.stream_id, self.expected_actions)
+        logger.info("NotificationManager initialized.")
+
+        # Video stream
         self.stream_handler = StreamHandler(self.video_source)
+        logger.info(f"StreamHandler ready for source: {self.video_source}")
 
-        # Reset temporal buffer
-        self.buffer = []
+        logger.info("ActionRecognitionService fully initialized.")
 
-        print(f"[INFO] Initialized ActionRecognitionService for → {self.video_source}")
-        print(f"[INFO] Model: {self.model_name}")
-        print(f"[INFO] Requires T frames: {self.T}")
-        print(f"[INFO] Preprocessor: {type(self.preprocessor).__name__ if self.preprocessor else 'None'}")
-        print(f"[INFO] Predictor: {type(self.predictor).__name__ if self.predictor else 'None'}")
-
-    # ---------------------------------------------------
-    # Main Run Loop
-    # ---------------------------------------------------
     def run(self):
+        logger.info("Starting ActionRecognitionService...")
+        self.initialize()
 
-        try:
-            self.initialize()
-        except Exception as e:
-            print(f"[ERROR] Initialization failed: {e}")
-            return
-
-        self.stream_handler.start()
-        print(f"[INFO] Running live inference on → {self.video_source}")
+        self.stream_handler.start_stream()
+        logger.info(f"Stream started for {self.video_source}")
 
         while True:
             frame, motion_flag = self.stream_handler.read_frame()
 
-            if frame is None or motion_flag is False:
+            if frame is None:
+                logger.debug("Received empty frame. Skipping...")
                 sleep(0.01)
                 continue
 
-            # ---------------------------------------------
-            # 1. Preprocess frame if needed
-            # ---------------------------------------------
-            if self.preprocessor is not None:
-                processed = self.preprocessor.preprocess_frame(frame)
+            if not motion_flag:
+                logger.debug("Motion flag false. Skipping frame.")
+                sleep(0.01)
+                continue
+
+            # Preprocessing
+            try:
+                processed = (
+                    self.preprocessor.preprocess_frame(frame)
+                    if self.preprocessor else frame
+                )
+            except Exception as e:
+                logger.error(f"Preprocessing failed: {e}")
+                continue
+
+            # Temporal / Single-frame handling
+            if self.frame_buffer:
+                self.frame_buffer.add_frame(processed)
+
+                if not self.frame_buffer.is_full():
+                    logger.debug("FrameBuffer not ready yet. Waiting...")
+                    continue
+
+                try:
+                    tensor = self.preprocessor.make_tensor(self.frame_buffer.get_frames())
+                except Exception as e:
+                    logger.error(f"Failed to create tensor from buffer: {e}")
+                    continue
             else:
-                processed = frame  # raw frame passed directly
-
-            # ---------------------------------------------
-            # 2. Handle model types
-            # ---------------------------------------------
-            # ------------------------------------------------
-            # MODELS THAT DO NOT REQUIRE TEMPORAL BUFFERS
-            # ------------------------------------------------
-            if self.T is None:
-
-                if self.preprocessor:
-                    tensor = self.preprocessor.make_tensor([processed])
-                else:
-                    # processed = (H,W,C), convert manually
+                try:
                     tensor = (
+                        self.preprocessor.make_tensor([processed])
+                        if self.preprocessor else
                         torch.from_numpy(processed)
-                        .permute(2, 0, 1)  # -> (C,H,W)
-                        .unsqueeze(0)  # -> (1,C,H,W)
-                        .unsqueeze(2)  # -> (1,C,1,H,W)
+                        .permute(2, 0, 1)
+                        .unsqueeze(0)
+                        .unsqueeze(2)
                         .float()
                     )
+                except Exception as e:
+                    logger.error(f"Tensor creation failed: {e}")
+                    continue
 
-                preds, infer_t = self._run_prediction(tensor)
+            # Prediction
+            preds, infer_t = self.inference_engine.run(tensor)
+            fps = 1 / infer_t if infer_t else 0
+            logger.debug(f"Inference completed | FPS={fps:.2f}")
 
-                fps = 1 / infer_t if infer_t > 0 else 0
-                frame = overlay_predictions(frame, preds, fps)
+            # Annotate
+            annotated = overlay_predictions(frame.copy(), preds, fps)
 
+            # Notification logic
+            snap = self.notification_manager.update(preds, annotated)
+            if snap:
+                logger.info(f"Notification captured for stream {self.stream_id}")
+                ActionNotification(self.stream_id, snap).register()
 
-            else:
-                # ------------------------------------------------
-                # MODELS THAT REQUIRE TEMPORAL BUFFER (T FRAMES)
-                # ------------------------------------------------
-                self.buffer.append(processed)
-
-                # Keep fixed-size buffer
-                if len(self.buffer) > self.T:
-                    self.buffer.pop(0)
-
-                if len(self.buffer) == self.T:
-                    tensor = self.preprocessor.make_tensor(self.buffer)
-                    preds, infer_t = self._run_prediction(tensor)
-
-                    fps = 1 / infer_t if infer_t > 0 else 0
-                    annotated_frame = overlay_predictions(frame, preds, fps)
-
-                    snap = self.notification_manager.update(preds, annotated_frame)
-
-                    if snap is not None:
-                        notification = ActionNotification(self.stream_id, snap)
-                        notification.register()
-
-            # ---------------------------------------------
-            # 3. Show result
-            # ---------------------------------------------
-            cv2.imshow(f"Action Recognition - {self.video_source}", frame)
+            # Display output
+            cv2.imshow(f"Action Recognition - {self.video_source}", annotated)
             if cv2.waitKey(1) & 0xFF == ord("q"):
+                logger.info("Quit signal received. Stopping service.")
                 break
 
         self.cleanup()
 
     # ---------------------------------------------------
-    # Unified prediction handler
-    # ---------------------------------------------------
-    def _run_prediction(self, tensor):
-        """Run prediction using predictor or direct model forward."""
-
-        # Handle multi-pathway inputs (e.g., SlowFast)
-        if isinstance(tensor, list):
-            tensor = [t.to(self.device) for t in tensor]
-        else:
-            tensor = tensor.to(self.device)
-
-        # If a predictor exists → use it
-        if self.predictor:
-            return self.predictor.predict(tensor)
-
-        # ELSE → raw model forward
-        with torch.no_grad():
-            import time
-            t0 = time.time()
-            out = self.model(tensor)
-            infer_t = time.time() - t0
-            preds = out
-            return preds, infer_t
-
-    # ---------------------------------------------------
     # Cleanup
     # ---------------------------------------------------
     def cleanup(self):
+        logger.info("Cleaning up resources...")
         try:
             if self.stream_handler:
-                self.stream_handler.release()
-        except:
-            pass
+                self.stream_handler.release_stream()
+                logger.info("Stream handler released.")
+        except Exception as e:
+            logger.error(f"Error during stream release: {e}")
 
         cv2.destroyAllWindows()
-        print(f"[INFO] Stopped stream → {self.video_source}")
+        logger.info(f"Service stopped for stream  {self.video_source}")

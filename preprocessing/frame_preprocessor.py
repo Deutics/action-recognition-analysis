@@ -2,6 +2,8 @@
 import cv2
 import torch
 import numpy as np
+from utils.logger import get_logger
+logger = get_logger(__name__)
 
 # Standard ImageNet normalization mean & std (RGB order)
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -16,7 +18,7 @@ class FramePreprocessor:
     - Color conversion (BGR → RGB)
     - Resize to model input size
     - Normalization using ImageNet mean & std
-    - Stack frames into 5D tensor format (1, C, T, H, W)
+    - Stack frames into 5D tensor format (1, C, frame_window_size, H, W)
     """
 
     def __init__(self, img_size: int):
@@ -27,6 +29,7 @@ class FramePreprocessor:
             img_size (int): The height/width that each frame must be resized to.
         """
         self.img_size = img_size
+        logger.info(f"FramePreprocessor initialized with img_size={self.img_size}")
 
     def preprocess_frame(self, frame):
         """
@@ -48,6 +51,7 @@ class FramePreprocessor:
         resized_frame = cv2.resize(rgb_frame, (self.img_size, self.img_size))
         normalized_frame = resized_frame.astype(np.float32) / 255.0
         normalized_frame = (normalized_frame - MEAN) / STD
+        logger.debug("Frame preprocessed")
         return normalized_frame
 
     def make_tensor(self, frame_buffer):
@@ -57,19 +61,14 @@ class FramePreprocessor:
 
         Args:
             frame_buffer (list[np.ndarray]):
-                List of frames (T frames), each shaped (H, W, C).
+                List of frames (frame_window_size frames), each shaped (H, W, C).
 
         Returns:
             torch.Tensor:
-                Tensor of shape (1, C, T, H, W)
+                Tensor of shape (1, C, frame_window_size, H, W)
         """
-        # Shape: (T, H, W, C)
         stacked_frames = np.stack(frame_buffer, axis=0)
-
-        # Rearrange to (C, T, H, W)
         stacked_frames = stacked_frames.transpose(3, 0, 1, 2)
-
-        # Convert to tensor and add batch dimension → (1, C, T, H, W)
         tensor = torch.from_numpy(stacked_frames).unsqueeze(0)
-
+        logger.debug(f"Stacked {len(frame_buffer)} frames into tensor of shape {tensor.shape}")
         return tensor
