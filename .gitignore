@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.log
+test_videos/output/
+*.mp4
+*.json
+output/
+*.pt
+*.jpg
+*.jpeg
+*.gif
+.idea/
+*.ts
+*.png
