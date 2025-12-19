@@ -1,11 +1,16 @@
 *.venv
 model_results.json
+*.pt
 *.__pycache__
+*.idea
 *.rar
 *.h5
-
-*.ts
 *.mp4
+*.webm
+*.png
+*.jpg
+test.py
+*.ts
 
 # Virtual environment
 .venv/
@@ -31,7 +36,3 @@ Thumbs.db
 # Jupyter Notebook checkpoints (if any)
 .ipynb_checkpoints/
 
-# Build / packaging
-*.egg-info/
-dist/
-build/
