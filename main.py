@@ -23,7 +23,7 @@ def run_posture_service(source: str, source_id: str):
         service = PoseRecognition(
             video_source=source,
             source_id=source_id,
-            model_path="yolo11n-pose.pt",
+            model_path="yolo11m-pose.pt",
             config=PostureConfig(),
             confidence_threshold=0.5
         )

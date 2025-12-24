@@ -21,7 +21,7 @@ class PostureConfig:
     
     # Knee angle thresholds (degrees from straight = 180)
     sitting_knee_angle_max: float = 120.0
-    standing_knee_angle_min: float = 150.0
+    standing_knee_angle_min: float = 135.0
     squatting_knee_angle_range: Tuple[float, float] = (60.0, 120.0)
     
     # Horizontal orientation threshold (for lying detection)

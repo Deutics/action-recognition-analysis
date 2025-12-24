@@ -73,7 +73,7 @@ class GeometryUtils:
     
     @staticmethod
     def are_segments_aligned(angle_a: float, angle_b: float, 
-                            threshold: float = 10.0) -> bool:
+                            threshold: float = 15.0) -> bool:
         """Check if two segments are aligned (considering bidirectional nature)"""
         diff_same_direction = GeometryUtils.calculate_angular_difference(angle_a, angle_b)
         diff_opposite_direction = GeometryUtils.calculate_angular_difference(angle_a, angle_b + 180.0)

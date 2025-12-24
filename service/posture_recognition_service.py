@@ -75,7 +75,11 @@ class PoseRecognition:
             while True:
                 # Read frame and motion detection from stream handler
                 frame, motion_detected = self.stream_handler.read_frame()
-                
+                # (h, w) = frame.shape[:2]
+                # center = (w // 2, h // 2)
+                # M = cv2.getRotationMatrix2D(center, 10, 1.0)
+                # frame = cv2.warpAffine(frame, M, (w, h))
+
                 if frame is None:
                     logger.warning("End of stream reached")
                     break

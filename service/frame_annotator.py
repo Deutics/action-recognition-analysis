@@ -63,7 +63,7 @@ class FrameAnnotator:
                 label_y = max(y_min - 10, 25)
                 
                 cv2.putText(frame, text, (label_x, label_y), font, font_scale, color, thickness)
-        
+            FrameAnnotator._draw_keypoints(frame, keypoints)
         return frame
     
     @staticmethod
