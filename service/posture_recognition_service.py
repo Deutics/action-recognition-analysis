@@ -101,40 +101,33 @@ class PoseRecognition:
             logger.error(f"Error in service loop: {str(e)}", exc_info=True)
         finally:
             cv2.destroyAllWindows()
-    
+
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Process single frame through entire pipeline
-        
-        Args:
-            frame: Input video frame
-            
-        Returns:
-            Annotated frame
-        """
+        """Process single frame through entire pipeline"""
         try:
+            # Get frame dimensions
+            frame_height, frame_width = frame.shape[:2]
+
             # Run YOLO inference
             results = self.model(frame, conf=self.confidence_threshold, verbose=False)
-            
+
             if results and len(results) > 0:
                 result = results[0]
-                
-                # Process each detected person
+
                 if result.keypoints is not None:
                     keypoints_data = result.keypoints.data.cpu().numpy()
                     total_persons = len(keypoints_data)
-                    
+
                     for idx, person_keypoints in enumerate(keypoints_data):
-                        # Extract keypoints (YOLO returns [x, y, confidence] for each keypoint)
                         kpt_coords = person_keypoints[:, :2]
-                        kpt_conf = person_keypoints[:, 2].tolist()  # Convert to list for proper indexing
-                        
-                        # Extract relevant keypoints
+                        kpt_conf = person_keypoints[:, 2].tolist()
+
+                        # Extract keypoints
                         kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
-                        
-                        # Classify posture
-                        label, confidence = self.classifier.classify(kpts)
-                        
+
+                        # Classify posture with actual frame height
+                        label, confidence = self.classifier.classify(kpts, frame_height)
+
                         # Annotate frame
                         frame = self.frame_annotator.annotate_frame(
                             frame,
@@ -142,11 +135,11 @@ class PoseRecognition:
                             confidence=confidence,
                             keypoints=kpts
                         )
-                        
-                        logger.debug(f"Person {idx+1}/{total_persons}: {label} (confidence: {confidence:.2f})")
-            
+
+                        logger.debug(f"Person {idx + 1}/{total_persons}: {label} (confidence: {confidence:.2f})")
+
             return frame
-            
+
         except Exception as e:
             logger.error(f"Error processing frame: {str(e)}", exc_info=True)
             return frame
