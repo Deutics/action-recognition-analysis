@@ -23,8 +23,8 @@ if __name__ == "__main__":
     # Required for Windows multiprocessing
     streams = [
         # {"source": "https://media.camzify.live:8888/73/index.m3u8", "model": "c2d_r50","stream_id":"73"},
-        # {"source": "https://media.camzify.live:8888/74/index.m3u8", "model": "slowfast_r50", "stream_id":"74"},
-        {"source": 0, "model": "c2d_r50","stream_id":"0"},
+        {"source": "https://media.camzify.live:8888/74/index.m3u8", "model": "slowfast_r50", "stream_id":"74"},
+        # {"source": 0, "model": "c2d_r50","stream_id":"0"},
     ]
 
     processes = []

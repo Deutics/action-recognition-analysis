@@ -91,6 +91,7 @@ class ActionRecognitionService:
 
         while True:
             frame, motion_flag = self.stream_handler.read_frame()
+            source_fps = int(self.stream_handler.capture.get(cv2.CAP_PROP_FPS))
 
             if frame is None:
                 logger.debug("Received empty frame. Skipping...")
@@ -112,7 +113,6 @@ class ActionRecognitionService:
                 logger.error(f"Preprocessing failed: {e}")
                 continue
 
-            # Temporal / Single-frame handling
             if self.frame_buffer:
                 self.frame_buffer.add_frame(processed)
 
@@ -125,28 +125,14 @@ class ActionRecognitionService:
                 except Exception as e:
                     logger.error(f"Failed to create tensor from buffer: {e}")
                     continue
-            else:
-                try:
-                    tensor = (
-                        self.preprocessor.make_tensor([processed])
-                        if self.preprocessor else
-                        torch.from_numpy(processed)
-                        .permute(2, 0, 1)
-                        .unsqueeze(0)
-                        .unsqueeze(2)
-                        .float()
-                    )
-                except Exception as e:
-                    logger.error(f"Tensor creation failed: {e}")
-                    continue
 
             # Prediction
             preds, infer_t = self.inference_engine.run(tensor)
-            fps = 1 / infer_t if infer_t else 0
-            logger.debug(f"Inference completed | FPS={fps:.2f}")
+            infer_fps = 1 / infer_t if infer_t else 0
+            logger.debug(f"Inference completed | FPS={infer_fps}")
 
             # Annotate
-            annotated = overlay_predictions(frame.copy(), preds, fps)
+            annotated = overlay_predictions(frame.copy(), preds, source_fps,infer_fps)
 
             # Notification logic
             snap = self.notification_manager.update(preds, annotated)
@@ -162,9 +148,8 @@ class ActionRecognitionService:
 
         self.cleanup()
 
-    # ---------------------------------------------------
     # Cleanup
-    # ---------------------------------------------------
+
     def cleanup(self):
         logger.info("Cleaning up resources...")
         try:

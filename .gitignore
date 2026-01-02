@@ -6,13 +6,14 @@ model_results.json
 *.jpg
 *.jpeg
 *.png
-
+*.pt
 *.ts
 *.mp4
 
 # Virtual environment
 .venv/
 env/
+test_videos
 
 # Python cache and compiled files
 __pycache__/
