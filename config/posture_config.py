@@ -29,6 +29,7 @@ class PostureConfig:
     
     # Confidence thresholds
     min_keypoint_confidence: float = 0.3
+    lying_duration_threshold: float = 3.0
 
 
 # Posture labels as string constants
@@ -40,6 +41,7 @@ class PostureLabel:
     LYING = "Lying"
     UNKNOWN = "Unknown"
     INSUFFICIENT = "Insufficient_Keypoints"
+    FALLING = "Falling"
 
 
 # YOLO pose keypoint indices for COCO format (17 keypoints)

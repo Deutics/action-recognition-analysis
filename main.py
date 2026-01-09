@@ -43,7 +43,7 @@ def main():
         # {"source": "rtsp://media.camzify.live:8554/74", "source_id": "stream_2"},
         # {"source": 0, "source_id": "stream_2"},
         # Uncomment for local video file testing
-        {"source": "videos/random2.webm", "source_id": "local_video"},
+        {"source": "videos/yt_fail1.mp4", "source_id": "local_video"},
         # {"source": "videos/googleimg12.jpg", "source_id": "local_video"},
     ]
     

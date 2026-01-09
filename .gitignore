@@ -15,6 +15,9 @@ test.py
 # Virtual environment
 .venv/
 env/
+videos
+output
+output_videos
 
 # Python cache and compiled files
 __pycache__/

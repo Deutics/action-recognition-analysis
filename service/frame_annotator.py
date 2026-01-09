@@ -5,7 +5,7 @@ Annotate video frames with posture detection results
 
 import cv2
 import numpy as np
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 
 
 class FrameAnnotator:
@@ -19,13 +19,15 @@ class FrameAnnotator:
         "Squatting": (255, 0, 255),   # Magenta
         "Lying": (0, 255, 255),       # Yellow
         "Unknown": (128, 128, 128),   # Gray
-        "Insufficient_Keypoints": (192, 192, 192),  # Light Gray
+        "Insufficient_Keypoints": (192, 192, 192), # Light Gray
+        "Falling": (0, 0, 255),
     }
     
     @staticmethod
     def annotate_frame(frame: np.ndarray, 
                        posture_label: str, 
                        confidence: float,
+                       person_id: Optional[int] = None,
                        keypoints: Dict[str, Tuple[float, float]] = None) -> np.ndarray:
         """
         Annotate frame with posture label above person's bounding box
@@ -43,7 +45,7 @@ class FrameAnnotator:
         color = FrameAnnotator.POSTURE_COLORS.get(posture_label, (128, 128, 128))
         
         # Create label text
-        text = f"{posture_label} ({confidence:.2f})"
+        text = f"ID:{person_id} {posture_label} ({confidence:.2f})"
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.8
         thickness = 2
