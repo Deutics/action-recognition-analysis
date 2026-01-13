@@ -34,7 +34,7 @@ class PoseRecognition:
                  model_path: str = "yolo11n-pose.pt",
                  config: Optional[PostureConfig] = None,
                  confidence_threshold: float = 0.5,
-                 infer_every_n_frames: int = 2):
+                 infer_every_n_frames: int = 1):
 
         self.video_source = video_source
         self.source_id = source_id
@@ -149,13 +149,12 @@ class PoseRecognition:
 
         persons = []
 
-        # results = self.model.track(
-        #     frame,
-        #     conf=self.confidence_threshold,
-        #     persist=True,
-        #     verbose=False
-        # )
-        results = self.model.predict(frame,verbose = False)
+        results = self.model.track(
+            frame,
+            conf=self.confidence_threshold,
+            persist=True,
+            verbose=False
+        )
 
         if not results:
             return persons

@@ -25,11 +25,11 @@ class PostureConfig:
     squatting_knee_angle_range: Tuple[float, float] = (60.0, 120.0)
     
     # Horizontal orientation threshold (for lying detection)
-    horizontal_deviation_threshold: float = 25.0
+    horizontal_deviation_threshold: float = 30.0
     
     # Confidence thresholds
     min_keypoint_confidence: float = 0.3
-    lying_duration_threshold: float = 3.0
+    lying_duration_threshold: float = 0.5
 
 
 # Posture labels as string constants
