@@ -23,29 +23,31 @@ class PersonTracker:
     def update(self, person_id: int, posture: str) -> bool:
         now = time.time()
 
+        # Initialize state if new person
         if person_id not in self.persons:
-            self.persons[person_id] = PersonState(posture, now)
+            self.persons[person_id] = PersonState(posture=posture, posture_start_time=now)
             return False
 
         state = self.persons[person_id]
 
-        # posture changed → reset state
+        # If posture changed, update posture and start time, but DO NOT reset notified or last_trigger_time
         if posture != state.posture:
             state.posture = posture
             state.posture_start_time = now
-            state.notified = False
+            # Preserve cooldown state across transitions
             return False
 
-        # lying persistence check with cooldown
+        # Only trigger notification for LYING persistence
         if posture == PostureLabel.LYING:
-            if not state.notified:
-                if now - state.posture_start_time >= self.lying_threshold:
-                    # check cooldown
-                    if state.last_trigger_time is None or (now - state.last_trigger_time >= self.cooldown_period):
-                        state.notified = True
-                        state.last_trigger_time = now
-                        return True
+            # Has LYING persisted long enough?
+            if now - state.posture_start_time >= self.lying_threshold:
+                # Respect cooldown per person ID
+                if state.last_trigger_time is None or (now - state.last_trigger_time >= self.cooldown_period):
+                    state.notified = True
+                    state.last_trigger_time = now
+                    return True
 
+        # Otherwise, no trigger
         return False
 
     def cleanup(self, active_ids: set):

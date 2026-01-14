@@ -110,6 +110,11 @@ class PostureClassifier:
         if grounded_votes >= 2:
             return (PostureLabel.LYING, min(0.95, 0.7 + 0.1 * grounded_votes))
 
+        if torso_dev_vert is not None and 28.0 <= torso_dev_vert <= 75.0:
+            if hip_height_ratio is not None and hip_height_ratio < 0.45:
+                if leg_dev_vert is not None and leg_dev_vert > 45.0:  # legs not vertical
+                    return (PostureLabel.LYING, 0.85)
+
         # Sitting
         if avg_knee_angle is not None and avg_knee_angle < self.config.sitting_knee_angle_max:
             if hip_height_ratio is not None and hip_height_ratio < 0.50:
@@ -160,7 +165,6 @@ class PostureClassifier:
             segments_diff > self.config.bending_threshold
         ):
             return (PostureLabel.BENDING, 0.8)
-
         return (PostureLabel.UNKNOWN, 0.3)
 
     def _calculate_body_compactness(self, kpts: Dict) -> Optional[float]:
