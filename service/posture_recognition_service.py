@@ -172,10 +172,16 @@ class PoseRecognition:
         frame_h = frame.shape[0]
 
         for idx, person_keypoints in enumerate(keypoints_data):
+            if person_keypoints.ndim != 2 or person_keypoints.shape[1] < 2:
+                continue
+
             person_id = track_ids[idx] if idx < len(track_ids) else idx
 
             kpt_coords = person_keypoints[:, :2]
-            kpt_conf = person_keypoints[:, 2].tolist()
+
+            kpt_conf = None
+            if person_keypoints.shape[1] >= 3:
+                kpt_conf = person_keypoints[:, 2].tolist()
 
             kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
             label, confidence = self.classifier.classify(kpts, frame_h)

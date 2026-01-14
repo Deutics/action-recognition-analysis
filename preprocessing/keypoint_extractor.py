@@ -27,15 +27,29 @@ class KeypointExtractor:
         Returns:
             Dictionary with extracted and validated keypoints
         """
-        
+
         def get_kpt_if_valid(idx: int) -> Optional[Tuple[float, float]]:
-            if confidence_scores is not None and confidence_scores[idx] < self.config.min_keypoint_confidence:
+            # Coordinate bounds check
+            if idx >= len(person_keypoints):
                 return None
+
+            # Confidence bounds check
+            if confidence_scores is not None:
+                if idx >= len(confidence_scores):
+                    return None
+                if confidence_scores[idx] < self.config.min_keypoint_confidence:
+                    return None
+
             kpt = person_keypoints[idx]
+
+            # Invalid / missing keypoint
+            if kpt is None or len(kpt) < 2:
+                return None
             if kpt[0] == 0 and kpt[1] == 0:
                 return None
-            return (kpt[0], kpt[1])
-        
+
+            return (float(kpt[0]), float(kpt[1]))
+
         # Extract individual keypoints
         kpts = {
             'shoulder_left': get_kpt_if_valid(KeypointIndex.LEFT_SHOULDER),
