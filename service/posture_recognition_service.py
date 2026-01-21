@@ -54,7 +54,7 @@ class PoseRecognition:
         self.classifier = PostureClassifier(self.config)
         self.frame_annotator = FrameAnnotator()
         self.person_tracker = PersonTracker(
-            lying_threshold=self.config.lying_duration_threshold
+            lying_threshold=self.config.lying_duration_threshold,
         )
         self.notification_handler = NotificationHandler()
         self.stream_handler = StreamHandler(video_source)
@@ -62,6 +62,7 @@ class PoseRecognition:
         # State
         self.frame_index = 0
         self.last_persons = []
+        self.current_falling_ids = set()  # Track who is currently flagged as falling
 
         logger.info(f"Low-latency service initialized for source: {source_id}")
 
@@ -96,21 +97,32 @@ class PoseRecognition:
                 if run_inference:
                     self.last_persons = self._infer_and_classify(frame)
 
-                # ---------------- FALLING TRACKING ---------------- #
-                active_ids = set()
-                falling_ids = set()
+                    # ---------------- FALLING TRACKING (ONLY ON INFERENCE) ---------------- #
+                    active_ids = set()
+                    self.current_falling_ids.clear()
 
-                for p in self.last_persons:
-                    active_ids.add(p["id"])
-                    if self.person_tracker.update(p["id"], p["label"]):
-                        falling_ids.add(p["id"])
+                    for p in self.last_persons:
+                        active_ids.add(p["id"])
 
-                self.person_tracker.cleanup(active_ids)
+                        # Update tracker - returns True only when notification should be sent
+                        if self.person_tracker.update(p["id"], p["label"]):
+                            # logger.warning(f"[SERVICE] >>> Tracker returned TRUE for Person {p['id']} - saving notification <<<")
+                            self.current_falling_ids.add(p["id"])
+                            # Save notification immediately when triggered
+                            self.notification_handler.save_falling_notification(
+                                person_id=p["id"],
+                                frame=frame.copy(),
+                                source_id=self.source_id
+                            )
 
-                # ---------------- ANNOTATION ---------------- #
+                    self.person_tracker.cleanup(active_ids)
+                else:
+                    logger.debug(f"[SERVICE] Frame {self.frame_index}: Skipping inference (motion={motion_detected})")
+
+                # ---------------- ANNOTATION (EVERY FRAME) ---------------- #
                 for p in self.last_persons:
                     label = p["label"]
-                    if p["id"] in falling_ids:
+                    if p["id"] in self.current_falling_ids:
                         label = "Falling"
 
                     frame = self.frame_annotator.annotate_frame(
@@ -120,13 +132,6 @@ class PoseRecognition:
                         keypoints=p["keypoints"],
                         person_id=p["id"]
                     )
-
-                    if p["id"] in falling_ids:
-                        self.notification_handler.save_falling_notification(
-                            person_id=p["id"],
-                            frame=frame.copy(),
-                            source_id=self.source_id
-                        )
 
                 cv2.imshow(f"Posture Detection - Source {self.source_id}", frame)
 
