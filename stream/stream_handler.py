@@ -58,8 +58,9 @@ class StreamHandler:
             self.capture = cv2.VideoCapture(self.source)
             return None, False
 
+        # Return frame at original size (no resize)
+        # Resizing for display happens at the end of processing
         motion_detected = self.motion_detector.detect_motion(frame)
-        frame = cv2.resize(frame, (640, 480))
         return frame, motion_detected
 
     def release_stream(self):

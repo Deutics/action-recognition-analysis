@@ -1,82 +1,77 @@
-"""
-Main Entry Point for Posture Detection Service
-Handles multiprocess stream processing
-"""
-
 from multiprocessing import Process
+from typing import Optional
 
-from config.posture_config import PostureConfig
-from service.posture_recognition_service import PoseRecognition
+from config.detection_config import ForceIntentConfig, DoorROIConfig, PostureConfig
+from service.unified_detection_service import UnifiedDetectionService
 from utils.logger import get_logger
+from utils.roi_selector import ROISelector
+
 logger = get_logger(__name__)
 
 
-def run_posture_service(source: str, source_id: str):
-    """
-    Run posture detection service for a single stream
-    
-    Args:
-        source: Video source (file path or RTSP URL)
-        source_id: Unique identifier for stream
-    """
+def run_service(video_source: str, source_id: str, door_roi: Optional[DoorROIConfig],
+                enable_fall: bool = True, enable_force: bool = True):
+    """Run detection service for a single stream."""
     try:
-        service = PoseRecognition(
-            video_source=source,
+        force_config = None
+        if enable_force:
+            force_config = ForceIntentConfig(enabled=True, door_roi=door_roi)
+        
+        service = UnifiedDetectionService(
+            video_source=video_source,
             source_id=source_id,
-            model_path="yolo11m-pose.pt",
-            config=PostureConfig(),
-            confidence_threshold=0.5
+            posture_config=PostureConfig(),
+            force_intent_config=force_config,
+            enable_posture=enable_fall,
+            enable_force_intent=enable_force
         )
         service.run()
+        
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        logger.error(f"Error running service for source {source_id}: {str(e)}")
-
-
+        logger.error(f"[Main] Error in {source_id}: {str(e)}", exc_info=True)
 
 
 def main():
-    """Main entry point - setup and run services"""
-    
-    # Define video streams to process
+    """Main entry point."""
     streams = [
-        # {"source": "rtsp://media.camzify.live:8554/73", "source_id": "stream_1"},
-        # {"source": "rtsp://media.camzify.live:8554/74", "source_id": "stream_2"},
-        # {"source": 0, "source_id": "stream_2"},
-        # Uncomment for local video file testing
-        {"source": "videos/yt_fail1.mp4", "source_id": "local_video"},
-        # {"source": "videos/googleimg12.jpg", "source_id": "local_video"},
+        {
+            "source": "videos/door.mp4",
+            "source_id": "camera_1",
+            "enable_fall": True,
+            "enable_force": True
+        },
     ]
-
-    logger.info(f"Starting {len(streams)} posture detection service(s)")
     
-    # Start a process for each stream
     processes = []
+    
     for stream_config in streams:
-        logger.info(f"Starting process for {stream_config['source_id']}")
+        source = stream_config["source"]
+        source_id = stream_config["source_id"]
+        enable_fall = stream_config.get("enable_fall", True)
+        enable_force = stream_config.get("enable_force", True)
+        
+        door_roi = None
+        if enable_force:
+            door_roi = ROISelector.select_door_roi(source, source_id)
         
         p = Process(
-            target=run_posture_service,
-            args=(stream_config["source"], stream_config["source_id"]),
-            name=f"PoseService-{stream_config['source_id']}"
+            target=run_service,
+            args=(source, source_id, door_roi, enable_fall, enable_force),
+            name=f"Service-{source_id}"
         )
         p.start()
         processes.append(p)
     
-    logger.info(f"All {len(processes)} processes started")
-    
-    # Wait for all processes to complete
     try:
         for p in processes:
             p.join()
     except KeyboardInterrupt:
-        logger.info("Interrupt received, terminating all processes...")
         for p in processes:
-            if p.is_alive():
-                p.terminate()
-                p.join(timeout=5)
-                if p.is_alive():
-                    p.kill()
-        logger.info("All processes terminated")
+            p.terminate()
+        for p in processes:
+            p.join()
 
 
 if __name__ == "__main__":

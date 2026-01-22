@@ -78,17 +78,18 @@ class FrameAnnotator:
         thickness = -1
         
         # Draw midpoints (larger)
-        midpoints = ['shoulder_mid', 'hip_mid', 'knee_mid', 'ankle_mid']
+        midpoints = ['shoulder_mid', 'elbow_mid', 'hip_mid', 'knee_mid', 'ankle_mid']
         for kpt_name in midpoints:
             kpt = keypoints.get(kpt_name)
             if kpt and kpt[0] > 0 and kpt[1] > 0:
                 cv2.circle(frame, (int(kpt[0]), int(kpt[1])), radius + 2, (0, 200, 200), thickness)
         
-        # Draw skeleton connections
+        # Draw skeleton connections (including arms)
         connections = [
-            ('shoulder_mid', 'hip_mid'),
-            ('hip_mid', 'knee_mid'),
-            ('knee_mid', 'ankle_mid'),
+            ('shoulder_mid', 'elbow_mid'),  # Upper arms
+            ('elbow_mid', 'hip_mid'),        # Torso
+            ('hip_mid', 'knee_mid'),         # Thighs
+            ('knee_mid', 'ankle_mid'),       # Shins
         ]
         
         for start_kpt, end_kpt in connections:
@@ -96,6 +97,12 @@ class FrameAnnotator:
             end = keypoints.get(end_kpt)
             if start and end and start[0] > 0 and start[1] > 0 and end[0] > 0 and end[1] > 0:
                 cv2.line(frame, (int(start[0]), int(start[1])), (int(end[0]), int(end[1])), color, 2)
+        
+        # Draw individual elbows (distinct color for visibility)
+        for elbow_name in ['elbow_left', 'elbow_right']:
+            elbow = keypoints.get(elbow_name)
+            if elbow and elbow[0] > 0 and elbow[1] > 0:
+                cv2.circle(frame, (int(elbow[0]), int(elbow[1])), radius, (255, 0, 0), thickness)
         
         # Draw individual keypoints
         individual_kpts = [
@@ -109,3 +116,50 @@ class FrameAnnotator:
             kpt = keypoints.get(kpt_name)
             if kpt and kpt[0] > 0 and kpt[1] > 0:
                 cv2.circle(frame, (int(kpt[0]), int(kpt[1])), radius, (100, 200, 100), thickness)
+    
+    @staticmethod
+    def annotate_door_breakin_alert(frame: np.ndarray, person_id: int, force_score: float, max_score: float = 10.0) -> np.ndarray:
+        """
+        Add prominent 'DOOR BREAKIN' alert label to frame.
+        
+        Args:
+            frame: Input video frame
+            person_id: ID of person triggering alert
+            force_score: Current accumulated force score
+            max_score: Maximum force score for display
+            
+        Returns:
+            Annotated frame with alert
+        """
+        h, w = frame.shape[:2]
+        
+        # Draw red border around entire frame to indicate alert
+        cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 4)
+        
+        # Draw large alert text at top-center
+        alert_text = f"*** DOOR BREAKIN DETECTED ***"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1.5
+        thickness = 3
+        
+        text_size = cv2.getTextSize(alert_text, font, font_scale, thickness)[0]
+        x = (w - text_size[0]) // 2
+        y = 40
+        
+        # Draw background box for text
+        cv2.rectangle(frame, (x - 10, y - 30), (x + text_size[0] + 10, y + 10), (0, 0, 255), -1)
+        cv2.putText(frame, alert_text, (x, y), font, font_scale, (0, 255, 255), thickness)
+        
+        # Draw person ID and force score below alert
+        detail_text = f"Person ID: {person_id} | Force Score: {force_score:.2f}/{max_score}"
+        font_scale_detail = 0.9
+        thickness_detail = 2
+        text_size_detail = cv2.getTextSize(detail_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale_detail, thickness_detail)[0]
+        x_detail = (w - text_size_detail[0]) // 2
+        y_detail = y + 50
+        
+        cv2.rectangle(frame, (x_detail - 10, y_detail - 25), (x_detail + text_size_detail[0] + 10, y_detail + 5), (0, 0, 255), -1)
+        cv2.putText(frame, detail_text, (x_detail, y_detail), cv2.FONT_HERSHEY_SIMPLEX, font_scale_detail, (0, 255, 255), thickness_detail)
+        
+        return frame
+
