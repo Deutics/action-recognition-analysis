@@ -44,6 +44,8 @@ def main():
         # {"source": 0, "source_id": "stream_2"},
         # Uncomment for local video file testing
         {"source": "temppp.mp4", "source_id": "local_video"},
+        # {"source": "https://stream.rigguardian.com/55CPW/Lobby_Center_North/index.m3u8", "source_id": "Cam 1"},
+        # {"source": "https://stream.rigguardian.com/55CPW/Courtyard_2/index.m3u8", "source_id": "Cam 2"}
         # {"source": "videos/googleimg12.jpg", "source_id": "local_video"},
     ]
 

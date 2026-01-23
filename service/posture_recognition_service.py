@@ -5,6 +5,8 @@ Zero-buffer, latest-frame-only processing
 
 import cv2
 from typing import Optional
+
+from scipy.signal import ellip
 from ultralytics import YOLO
 import numpy as np
 import torch
@@ -41,8 +43,12 @@ class PoseRecognition:
         self.confidence_threshold = confidence_threshold
         self.infer_every_n_frames = max(1, infer_every_n_frames)
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cpu"
+        self.device = "mps" if torch.mps.is_available() else self.device
+        self.device = "cuda" if torch.cuda.is_available() else self.device
+
         logger.info(f"Using device: {self.device}")
+
         self.config = config or PostureConfig()
 
         logger.info(f"Loading YOLO model: {model_path}")

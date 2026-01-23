@@ -8,7 +8,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 import numpy as np
+from polars import arg_where
+
 from utils.logger import get_logger
+from notification.fall_detection_alerts import FallDetectionAlerts
+
 
 logger = get_logger(__name__)
 
@@ -25,6 +29,8 @@ class NotificationHandler:
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._notification_pusher = FallDetectionAlerts({})
+
         logger.info(f"Notification handler initialized. Output dir: {self.output_dir}")
 
     def save_falling_notification(self,
@@ -42,6 +48,10 @@ class NotificationHandler:
             # Save frame
             cv2.imwrite(str(filepath), frame)
 
+            self._notification_pusher.send_push_notification(camera_name=source_id, alert_type="Fall",
+                                                             person_id=str(person_id), confidence=90,
+                                                             timestamp=datetime.now())
+
             logger.warning(
                 f"FALLING NOTIFICATION SAVED: "
                 f"Person ID={person_id}, Source={source_id}, File={filename}"
@@ -51,4 +61,5 @@ class NotificationHandler:
 
         except Exception as e:
             logger.error(f"Failed to save notification: {e}", exc_info=True)
-            return None
+            raise
+            # return None

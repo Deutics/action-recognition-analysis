@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import base64
 import tempfile
+
+import numpy as np
 # from twilio.rest import Client
 # from twilio.base.exceptions import TwilioRestException
 # from viam.media.video import ViamImage
@@ -88,10 +90,12 @@ class FallDetectionAlerts:
 
         # Validate required config
         if not all([self.account_sid, self.auth_token, self.from_phone]):
-            raise ValueError("Missing required Twilio configuration: account_sid, auth_token, from_phone")
+            pass
+            # raise ValueError("Missing required Twilio configuration: account_sid, auth_token, from_phone")
 
         if not self.to_phones:
-            raise ValueError("No alert phone numbers configured")
+            pass
+            # raise ValueError("No alert phone numbers configured")
 
         # Initialize Twilio client
         try:
@@ -99,7 +103,7 @@ class FallDetectionAlerts:
             LOGGER.info("✅ Twilio client initialized successfully")
         except Exception as e:
             LOGGER.error(f"❌ Failed to initialize Twilio client: {e}")
-            raise
+            # raise
 
     def _validate_phone_numbers(self):
         """Validate phone number formats and log warnings for invalid numbers"""
@@ -152,7 +156,7 @@ class FallDetectionAlerts:
 
         return True
 
-    async def save_image_locally(self, image: ViamImage, person_id: str) -> str:
+    async def save_image_locally(self, image: np.ndarray, person_id: str) -> str:
         """Save image to local temporary file and return path"""
         try:
             # Create timestamp for filename
@@ -212,7 +216,7 @@ class FallDetectionAlerts:
                               alert_type: str,
                               person_id: str,
                               confidence: float,
-                              image: ViamImage,
+                              image: np.ndarray,
                               metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Send fall detection alert via Twilio SMS (file-fallback only)."""
 
@@ -309,7 +313,7 @@ class FallDetectionAlerts:
 
     async def send_push_notification(self, camera_name: str, alert_type: str, person_id: str, confidence: float,
                                      timestamp: datetime, metadata: Optional[Dict[str, Any]] = None,
-                                     image: Optional[ViamImage] = None) -> bool:
+                                     image: Optional[np.ndarray] = None) -> bool:
         """Send push notification to rigguardian.com web app (forward alert_type)."""
         try:
             # Forward alert_type to webhook notification flow so payloads use the correct type
@@ -321,7 +325,7 @@ class FallDetectionAlerts:
             return False
 
     async def send_webhook_notification(self, camera_name: str, person_id: str, confidence: float, timestamp: datetime,
-                                        metadata: Optional[Dict[str, Any]] = None, image: Optional[ViamImage] = None,
+                                        metadata: Optional[Dict[str, Any]] = None, image: Optional[np.ndarray] = None,
                                         alert_type: str = "fall") -> bool:
         """Send notification via webhook to configured push URL(s).
 
@@ -482,7 +486,7 @@ class FallDetectionAlerts:
             LOGGER.error(f"❌ {attempt_name} webhook error: {e}")
             return False
 
-    async def save_fall_image(self, camera_name: str, person_id: str, confidence: float, image: ViamImage,
+    async def save_fall_image(self, camera_name: str, person_id: str, confidence: float, image: np.ndarray,
                               detection_info=None, keypoints=None):
         """Save fall detection image using the file-based fallback only."""
 
@@ -514,7 +518,7 @@ class FallDetectionAlerts:
             LOGGER.error(traceback.format_exc())
             return {"status": "error", "method": "save_fall_image", "error": str(e)}
 
-    async def _save_fall_image_to_file(self, camera_name: str, person_id: str, confidence: float, image: ViamImage,
+    async def _save_fall_image_to_file(self, camera_name: str, person_id: str, confidence: float, image: np.ndarray,
                                        keypoints=None):
         """Fallback method to save image directly to data manager's capture directory"""
         try:
