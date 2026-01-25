@@ -1,4 +1,5 @@
 [
-  {"source_id":  "Local Video", "source": "temppp.mp4"},
-  {"source_id":  "Local Video 2", "source": "temppp.mp4"}
+  {"source_id":  "Lobby_Center_North", "source": "rtsp://70.19.68.121:554/chID=25&streamType=sub"},
+  {"source_id":  "PW_Awning_N_Facing", "source": "rtsp://70.19.68.121:554/chID=16&streamType=sub"},
+  {"source_id":  "Roof_Front_East_Facing", "source": "rtsp://70.19.68.121:554/chID=01&streamType=sub"}
 ]

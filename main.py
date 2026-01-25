@@ -71,6 +71,7 @@ def main():
         pass
 
     streams = load_streams_config("stream_sources.json")
+    streams = streams[0:1]
 
     logger.info(f"Starting {len(streams)} posture detection service(s)")
 
