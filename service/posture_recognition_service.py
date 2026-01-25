@@ -210,4 +210,5 @@ class PoseRecognition:
         logger.info("Releasing resources...")
         await self.notification_handler.stop()
         self.stream_handler.release_stream()
-        cv2.destroyAllWindows()
+        if ENABLE_UI == "1":
+            cv2.destroyAllWindows()
