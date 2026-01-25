@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import time
 import asyncio
+from config.constants import ENABLE_UI
 
 from config.posture_config import PostureConfig
 from preprocessing.keypoint_extractor import KeypointExtractor
@@ -138,11 +139,12 @@ class PoseRecognition:
                                                                     source_id=self.source_id,
                                                                     confidence=p["confidence"])
 
-                # cv2.imshow(f"Posture Detection - Source {self.source_id}", frame)
+                if ENABLE_UI:
+                    cv2.imshow(f"Posture Detection - Source {self.source_id}", frame)
 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    logger.info("Quit requested by user")
-                    break
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        logger.info("Quit requested by user")
+                        break
 
                 # let other tasks (notification worker) run
                 await asyncio.sleep(0)
