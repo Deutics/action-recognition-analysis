@@ -139,7 +139,7 @@ class PoseRecognition:
                                                                     source_id=self.source_id,
                                                                     confidence=p["confidence"])
 
-                if ENABLE_UI:
+                if ENABLE_UI == "1":
                     cv2.imshow(f"Posture Detection - Source {self.source_id}", frame)
 
                     if cv2.waitKey(1) & 0xFF == ord('q'):
