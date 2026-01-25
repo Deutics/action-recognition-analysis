@@ -31,7 +31,7 @@ class FallDetectionProcessor:
         self.confidence_threshold = confidence_threshold
         self.trackers = {}
         self.lying_threshold = lying_threshold
-        self.last_persons = {}
+        # self.last_persons = {}
         logger.info(f"FallDetectionProcessor initialized with model={model_path}")
         
     def _get_tracker(self, stream_id: str) -> PersonTracker:
@@ -42,74 +42,86 @@ class FallDetectionProcessor:
                 person_timeout=3.0
             )
         return self.trackers[stream_id]
-        
+
     def process_frame(self, frame, stream_id: str):
+        notifications_sent = 0
+        persons = []
+
         h, w = frame.shape[:2]
         self.classifier.set_frame_dimensions(h, w)
-        
-        results = self.model.track(frame, persist=True, verbose=False, conf=self.confidence_threshold)
-        
+
+        results = self.model.predict(
+            frame,
+            conf=self.confidence_threshold,
+            verbose=False
+        )
+
         annotated_frame = frame.copy()
-        
-        if not results or not results[0].boxes:
+
+        if not results or results[0].boxes is None or results[0].keypoints is None:
             return annotated_frame, 0
-            
+
         result = results[0]
         boxes = result.boxes
-        
-        if boxes.id is None:
-            return annotated_frame, 0
-        
-        if result.keypoints is None:
-            return annotated_frame, 0
-            
         keypoints_data = result.keypoints.data.cpu().numpy()
-        
-        tracker = self._get_tracker(stream_id)
-        active_ids = set()
-        notifications_sent = 0
-        current_falling_ids = set()
-        persons = []
-        
-        for idx, person_keypoints in enumerate(keypoints_data):
-            if person_keypoints.ndim != 2 or person_keypoints.shape[1] < 2:
-                continue
-                
+        num_boxes = len(boxes)
+        num_kpts = len(keypoints_data)
+        num_persons = min(num_boxes, num_kpts)
+
+        for idx in range(num_persons):
+            person_keypoints = keypoints_data[idx]
             box = boxes[idx]
-            person_id = int(box.id[0])
-            active_ids.add(person_id)
-            
+
+            person_id = idx  # frame-local, safe
+
             kpt_coords = person_keypoints[:, :2]
+
             kpt_conf = None
             if person_keypoints.shape[1] >= 3:
                 kpt_conf = person_keypoints[:, 2].tolist()
-            
-            kpts = self.keypoint_extractor.extract(kpt_coords.tolist(), kpt_conf)
+
+            kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
             posture, confidence = self.classifier.classify(kpts, h)
-            
-            should_notify = tracker.update(person_id, posture)
-            
-            if should_notify:
+
+            print(f"Stream {stream_id} | Person {person_id} → {posture}")
+
+            # Alert logic (frame-based, no cooldown)
+            if posture == "Lying":
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+
                 notification_frame = frame.copy()
                 cv2.rectangle(notification_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                cv2.putText(notification_frame, f"FALL DETECTED - P{person_id}", (x1, y1-10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                
-                self.notification_handler.save_falling_notification(person_id, notification_frame, stream_id)
+                cv2.putText(
+                    notification_frame,
+                    f"FALL DETECTED",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2
+                )
+
+                self.notification_handler.save_falling_notification(
+                    person_id,
+                    notification_frame,
+                    stream_id
+                )
+
                 notifications_sent += 1
-                current_falling_ids.add(person_id)
-                logger.warning(f"FALL DETECTED: Stream={stream_id}, Person={person_id}, Posture={posture}")
-            
+                logger.warning(
+                    f"FALL DETECTED | Stream={stream_id} | Person={person_id}"
+                )
+
             persons.append({
                 "id": person_id,
-                "label": "Falling" if person_id in current_falling_ids else posture,
+                "label": "Falling" if posture == "Lying" else posture,
                 "confidence": confidence,
                 "keypoints": kpts
             })
-        
-        self.last_persons[stream_id] = persons
-        
+
+        # self.last_persons[stream_id] = persons
+
+        # Annotation pass
         for p in persons:
             annotated_frame = self.frame_annotator.annotate_frame(
                 annotated_frame,
@@ -118,6 +130,5 @@ class FallDetectionProcessor:
                 keypoints=p["keypoints"],
                 person_id=p["id"]
             )
-        
-        tracker.cleanup(active_ids)
+
         return annotated_frame, notifications_sent

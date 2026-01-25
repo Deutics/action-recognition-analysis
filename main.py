@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 def main():
     stream_sources = {
         "camera_2": "videos/yt_fail1.mp4",
-        "camera_3": "videos/yt_fail1.mp4",
+        "camera_3": "videos/yt_fail2.mp4",
     }
     config=PostureConfig()
     lying_threshold = config.lying_duration_threshold
@@ -34,32 +34,24 @@ def main():
         stream_manager.start_all()
         logger.info("All streams started, beginning fall detection processing")
         
-        time.sleep(2)
-        
-        frame_count = 0
+        time.sleep(1)
         
         while True:
             frames = stream_manager.get_all_latest_frames()
             
             if not frames:
-                time.sleep(0.1)
+                time.sleep(0.01)
                 continue
             
             for stream_id, frame in frames.items():
                 annotated_frame, notifications = fall_detector.process_frame(frame, stream_id)
                 
                 stream_manager.update_annotated_frame(stream_id, annotated_frame)
-                
-                if notifications > 0:
-                    logger.info(f"Stream {stream_id}: {notifications} fall notifications sent")
             
             if enable_display:
                 if not stream_manager.display_all_streams():
                     logger.info("Display quit requested")
                     break
-            
-            frame_count += 1
-            time.sleep(0.01)
             
     except KeyboardInterrupt:
         logger.info("Shutdown signal received")

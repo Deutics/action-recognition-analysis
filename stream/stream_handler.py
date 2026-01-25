@@ -65,10 +65,6 @@ class StreamHandler:
         frame = cv2.resize(frame, (640, 480))
         return frame, motion_detected
 
-    def update_latest_frame(self):
-        self.latest_frame = self.read_frame()[0]
-        self.last_read_time = time.time()
-
     def release_stream(self):
         """Release the video capture resource."""
         if self.capture:
