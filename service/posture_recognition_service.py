@@ -46,7 +46,7 @@ class PoseRecognition:
         self.infer_every_n_frames = max(1, infer_every_n_frames)
 
         self.device = "cpu"
-        self.device = "mps" if torch.mps.is_available() else self.device
+        # self.device = "mps" if torch.mps.is_available() else self.device
         self.device = "cuda" if torch.cuda.is_available() else self.device
 
         logger.info(f"Using device: {self.device}")
