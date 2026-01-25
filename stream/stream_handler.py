@@ -142,20 +142,16 @@ class StreamHandler:
         Decide best backend and open capture.
         """
         # 1) Jetson RTSP via GStreamer (preferred)
-        if (
-            self.prefer_gstreamer_on_jetson
-            and self._is_rtsp()
-            and self._is_jetson()
-        ):
-            codec = self._probe_rtsp_codec(self.source)  # "hevc" / "h264" / None
-            gst = self._gst_pipeline_jetson(self.source, codec)
-            logger.info(f"Opening RTSP via GStreamer on Jetson (codec={codec or 'unknown'})")
-            cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
-            self._last_open_mode = "gstreamer"
-            if cap.isOpened():
-                return cap
-            self._last_error = "VideoCapture not opened (gstreamer)"
-            cap.release()
+        if self.prefer_gstreamer_on_jetson and self._is_rtsp() and self._is_jetson():
+            for codec_try in ("hevc", "h264", None):
+                gst = self._gst_pipeline_jetson(self.source, codec_try)
+                logger.info(f"Opening RTSP via GStreamer on Jetson (codec_try={codec_try})")
+                cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+                self._last_open_mode = "gstreamer"
+                if cap.isOpened():
+                    return cap
+                cap.release()
+            logger.warning("GStreamer open failed; falling back to OpenCV/FFmpeg")
 
             # fallback to OpenCV default below
             logger.warning("GStreamer open failed; falling back to OpenCV/FFmpeg")
