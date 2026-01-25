@@ -35,7 +35,7 @@ Thumbs.db
 # Logs and temporary files
 *.log
 *.tmp
-
+*.env
 # Jupyter Notebook checkpoints (if any)
 .ipynb_checkpoints/
 

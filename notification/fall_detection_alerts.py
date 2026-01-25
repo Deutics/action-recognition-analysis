@@ -1,581 +1,492 @@
 """
-Fall Detection Alert Service using Twilio
-Sends SMS alerts when a fall is detected with image and metadata
+Fall Detection Alert Service using Twilio + Webhook (async-safe, non-blocking best practices)
+
+Key improvements vs old version:
+- NO blocking Twilio SDK calls on the event loop: Twilio sends are offloaded via asyncio.to_thread()
+- Reuse a single aiohttp.ClientSession (no per-request session creation)
+- Proper JPEG encoding before base64 (do NOT base64 raw BGR bytes)
+- Remove the 60-second await sleep (that was freezing your pipeline)
+- Bounded concurrency with a semaphore (prevents overload when multiple alerts happen)
+- Cleaner logging + safer env parsing + E.164 validation
+- Proper resource cleanup via async close()
+
+Drop-in usage:
+    alerts = FallDetectionAlerts(config)
+    await alerts.send_fall_alert(...)
+    await alerts.close()   # at shutdown
+
+Dependencies:
+    pip install aiohttp twilio opencv-python numpy
 """
 
+from __future__ import annotations
+
 import os
-import asyncio
-import traceback
-import time
-from time import sleep
-import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+import re
+import json
 import base64
 import tempfile
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone, date
+from typing import Optional, Dict, Any, List, Tuple
 
+import cv2
 import numpy as np
-# from twilio.rest import Client
-# from twilio.base.exceptions import TwilioRestException
-# from viam.media.video import ViamImage
-# from annotate_image import main as annotate_main  # Import the main function
 
-LOGGER = logging.getLogger(__name__)
+import aiohttp
+from twilio.rest import Client
+from twilio.base.exceptions import TwilioRestException
+
+from utils.logger import get_logger
+from config.constants import (
+    TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN,
+    TWILIO_FROM_PHONE,
+    TO_PHONE_NUMBERS,
+    RIGGUARDIAN_WEBHOOK_URL,
+)
+
+LOGGER = get_logger(__name__)
+
+
+E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_phone_list(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _ensure_dir(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
+
+
+def _jpeg_base64(image_bgr: np.ndarray, quality: int = 80) -> Tuple[str, int]:
+    """
+    Convert BGR numpy image -> JPEG bytes -> base64 string.
+    Returns (b64_string, jpg_bytes_len)
+    """
+    ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        raise ValueError("Failed to JPEG-encode image")
+    jpg_bytes = enc.tobytes()
+    return base64.b64encode(jpg_bytes).decode("utf-8"), len(jpg_bytes)
+
+
+def _json_safe(obj: Any):
+    """Recursively convert non-JSON types (datetime, numpy, etc.) to JSON-safe."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    # numpy scalars
+    if hasattr(obj, "item"):
+        try:
+            return obj.item()
+        except Exception:
+            pass
+    return obj
+
+
+@dataclass
+class AlertConfig:
+    min_confidence: float = 0.7
+    cooldown_seconds: int = 120
+    webhook_timeout_sec: int = 10
+    webhook_max_retries: int = 2
+    webhook_backoff_base: float = 0.7  # seconds
+    max_concurrent_sends: int = 3
+    include_image_in_webhook: bool = True
+    webhook_jpeg_quality: int = 80
+    save_dir: str = "output/fall_notifications"
+    location: str = "55CPW"
 
 
 class FallDetectionAlerts:
-    """Service for sending fall detection alerts via Twilio"""
+    """Service for sending fall detection alerts via Twilio SMS + webhook push."""
 
     def __init__(self, config: dict):
-        """Initialize Twilio client and alert configuration"""
-        # Try to load from environment variables first, then config
-        self.account_sid = (
-                os.environ.get('TWILIO_ACCOUNT_SID') or
-                config.get('twilio_account_sid')
-        )
-        self.auth_token = (
-                os.environ.get('TWILIO_AUTH_TOKEN') or
-                config.get('twilio_auth_token')
-        )
-        self.from_phone = (
-                os.environ.get('TWILIO_FROM_PHONE') or
-                config.get('twilio_from_phone')
-        )
+        # --- Twilio credentials ---
+        self.account_sid = TWILIO_ACCOUNT_SID
+        self.auth_token = TWILIO_AUTH_TOKEN
+        self.from_phone = TWILIO_FROM_PHONE
+        self.to_phones = _parse_phone_list(TO_PHONE_NUMBERS)
+        # --- webhook ---
+        self.push_notification_url = RIGGUARDIAN_WEBHOOK_URL
 
-        # Handle phone numbers from environment (comma-separated) or config (list)
-        env_phones = os.environ.get('TWILIO_TO_PHONES') or config.get('twilio_to_phones')
-        LOGGER.debug(f"Raw TWILIO_TO_PHONES value: '{env_phones}'")
-
-        if env_phones and env_phones.strip():
-            # Split by comma and filter out empty strings
-            raw_phones = env_phones.split(',')
-            LOGGER.debug(f"Split phones: {raw_phones}")
-            self.to_phones = [phone.strip() for phone in raw_phones if phone.strip()]
-            LOGGER.debug(f"Filtered phones: {self.to_phones}")
-        else:
-            # Fallback to default
-            self.to_phones = ['+19738652226']
-            LOGGER.info("Using fallback phone number")
-
-        # Validate phone number formats
         self._validate_phone_numbers()
 
-        self.webhook_url = (
-                os.environ.get('TWILIO_WEBHOOK_URL') or
-                config.get('webhook_url')
-        )
+        # --- settings ---
+        self.cfg = AlertConfig()
 
-        # Alert settings (these can stay in config since they're not sensitive)
-        self.min_confidence = config.get('fall_confidence_threshold', 0.7)
-        self.cooldown_seconds = config.get('alert_cooldown_seconds', 1200)
-        LOGGER.debug(f"Cooldown seconds set to: {self.cooldown_seconds}")
-        self.last_alert_time = {}  # Track last alert time per camera
+        self.last_alert_time: Dict[str, datetime] = {}  # per-camera cooldown
 
-        # Push notification settings
-        self.notify_service_sid = (
-                os.environ.get('TWILIO_NOTIFY_SERVICE_SID') or
-                config.get('twilio_notify_service_sid')
-        )
-        self.push_notification_url = (
-                os.environ.get('RIGGUARDIAN_WEBHOOK_URL') or
-                config.get('rigguardian_webhook_url',
-                           'https://building-sensor-platform-production.up.railway.app/webhook/fall-alert')
-        )
-
-        # Log what source we're using (without exposing credentials)
-        if os.environ.get('TWILIO_ACCOUNT_SID'):
-            LOGGER.info("✅ Using Twilio credentials from environment variables")
+        # --- Twilio client ---
+        self.client: Optional[Client] = None
+        if self.account_sid and self.auth_token:
+            try:
+                self.client = Client(self.account_sid, self.auth_token)
+                LOGGER.info("✅ Twilio client initialized")
+            except Exception as e:
+                LOGGER.error(f"❌ Failed to initialize Twilio client: {e}", exc_info=True)
+                self.client = None
         else:
-            LOGGER.info("⚠️ Using Twilio credentials from robot configuration")
+            LOGGER.warning("⚠️ Twilio credentials missing; SMS sending will be disabled")
 
-        # Validate required config
-        if not all([self.account_sid, self.auth_token, self.from_phone]):
-            pass
-            # raise ValueError("Missing required Twilio configuration: account_sid, auth_token, from_phone")
+        # --- HTTP session (reused) ---
+        self._session: Optional[aiohttp.ClientSession] = None
 
-        if not self.to_phones:
-            pass
-            # raise ValueError("No alert phone numbers configured")
+        # bounded concurrency
+        self._sem = asyncio.Semaphore(self.cfg.max_concurrent_sends)
 
-        # Initialize Twilio client
-        try:
-            self.client = Client(self.account_sid, self.auth_token)
-            LOGGER.info("✅ Twilio client initialized successfully")
-        except Exception as e:
-            LOGGER.error(f"❌ Failed to initialize Twilio client: {e}")
-            # raise
+        _ensure_dir(self.cfg.save_dir)
+
+    # -------------------- lifecycle --------------------
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.cfg.webhook_timeout_sec)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    # -------------------- validation & cooldown --------------------
 
     def _validate_phone_numbers(self):
-        """Validate phone number formats and log warnings for invalid numbers"""
-        import re
+        if self.from_phone and not E164_RE.match(self.from_phone):
+            LOGGER.warning(f"⚠️ From phone '{self.from_phone}' may not be E.164 (+123...) format")
 
-        # E.164 format: + followed by 1-15 digits
-        e164_pattern = re.compile(r'^\+[1-9]\d{1,14}$')
-
-        # Check from_phone
-        if self.from_phone and not e164_pattern.match(self.from_phone):
-            LOGGER.warning(f"⚠️ From phone number '{self.from_phone}' may not be valid E.164 format")
-
-        # Check to_phones and filter out invalid ones
-        valid_phones = []
-        for phone in self.to_phones:
-            if e164_pattern.match(phone):
-                valid_phones.append(phone)
-                LOGGER.info(f"✅ Valid recipient phone: {phone}")
+        valid = []
+        for p in self.to_phones:
+            if E164_RE.match(p):
+                valid.append(p)
             else:
-                LOGGER.error(f"❌ Invalid recipient phone number: '{phone}' - must be E.164 format (+1234567890)")
+                LOGGER.error(f"❌ Invalid recipient phone number: '{p}' (must be E.164: +1234567890)")
 
-        if not valid_phones:
+        if not valid:
             raise ValueError("No valid recipient phone numbers found. Use E.164 format: +1234567890")
 
-        # Update to_phones with only valid numbers
-        self.to_phones = valid_phones
-        LOGGER.info(f"📱 Configured {len(self.to_phones)} valid recipient phone number(s)")
+        self.to_phones = valid
+        LOGGER.info(f"📱 Configured {len(self.to_phones)} recipient number(s)")
 
     def should_send_alert(self, camera_name: str, confidence: float) -> bool:
-        """Check if we should send an alert based on confidence and cooldown (per camera)"""
-        # Check confidence threshold
-        if confidence < self.min_confidence:
-            LOGGER.debug(f"Fall confidence {confidence:.3f} below threshold {self.min_confidence}")
+        if confidence < self.cfg.min_confidence:
             return False
 
-        # Check cooldown period per camera (not per person)
-        now = datetime.now()
-        cooldown_key = camera_name  # Use camera_name as the cooldown key
-        if cooldown_key in self.last_alert_time:
-            time_since_last = (now - self.last_alert_time[cooldown_key]).total_seconds()
-            if time_since_last < self.cooldown_seconds:
+        now = _utcnow()
+        last = self.last_alert_time.get(camera_name)
+        if last:
+            delta = (now - last).total_seconds()
+            if delta < self.cfg.cooldown_seconds:
                 LOGGER.info(
-                    f"⏳ Alert cooldown active for camera {camera_name} ({time_since_last:.1f}s < {self.cooldown_seconds}s) - no alert sent")
+                    f"⏳ Cooldown active for {camera_name}: {delta:.1f}s < {self.cfg.cooldown_seconds}s"
+                )
                 return False
-            else:
-                LOGGER.info(
-                    f"✅ Cooldown period expired for camera {camera_name} ({time_since_last:.1f}s >= {self.cooldown_seconds}s) - alert will be sent")
-        else:
-            LOGGER.info(f"🆕 First alert for camera {camera_name} - alert will be sent")
-
         return True
 
-    async def save_image_locally(self, image: np.ndarray, person_id: str) -> str:
-        """Save image to local temporary file and return path"""
-        try:
-            # Create timestamp for filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"fall_detection_{person_id}_{timestamp}.jpg"
+    # -------------------- message formatting --------------------
 
-            # Save to temporary directory
-            temp_dir = tempfile.gettempdir()
-            image_path = os.path.join(temp_dir, filename)
-
-            # Convert ViamImage to bytes and save
-            with open(image_path, 'wb') as f:
-                f.write(image.data)
-
-            LOGGER.info(f"📸 Fall detection image saved: {image_path}")
-            return image_path
-
-        except Exception as e:
-            LOGGER.error(f"❌ Failed to save image: {e}")
-            return ""
-
-    def format_alert_message(self,
-                             camera_name: str,
-                             alert_type: str,
-                             person_id: str,
-                             confidence: float,
-                             timestamp: datetime,
-                             image_path: str = "",
-                             metadata: Optional[Dict[str, Any]] = None) -> str:
-        """Format the alert message for SMS"""
-
-        timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-
-        message = f"🚨 FALL DETECTED 🚨\n"
-        message += f"Location: 55CPW\n"  # Added location
-        message += f"Camera: {camera_name}\n"
-        # message += f"Person: {person_id}\n"
-        message += f"Fall Confidence: {confidence:.1%}\n"
-        message += f"Time: {timestamp.strftime('%Y-%m-%d %I:%M%p')}\n"
-
-        if metadata:
-            if 'probabilities' in metadata:
-                probs = metadata['probabilities']
-                # message += f"Pose Probs: "
-                # message += f"Fall:{probs.get('fallen', 0):.1%}\n"
-        #        message += f"Stand:{probs.get('standing', 0):.1%} "
-        #       message += f"Sit:{probs.get('sitting', 0):.1%}\n"
-
+    def format_alert_message(
+        self,
+        camera_name: str,
+        alert_type: str,
+        person_id: str,
+        confidence: float,
+        timestamp: datetime,
+        image_path: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        msg = [
+            "🚨 FALL DETECTED 🚨",
+            f"Location: {self.cfg.location}",
+            f"Camera: {camera_name}",
+            f"Confidence: {confidence:.1%}",
+            f"Time: {timestamp.astimezone().strftime('%Y-%m-%d %I:%M%p')}",
+        ]
         if image_path:
-            message += f"View camera: https://rigguardian.com/cameras\n"
-        message += "\nPlease check the location immediately."
+            msg.append("View camera: https://rigguardian.com/cameras")
+        msg.append("")
+        msg.append("Please check the location immediately.")
+        return "\n".join(msg)
 
-        return message
+    # -------------------- disk: save image + metadata --------------------
 
-    async def send_fall_alert(self,
-                              camera_name: str,
-                              alert_type: str,
-                              person_id: str,
-                              confidence: float,
-                              image: np.ndarray,
-                              metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Send fall detection alert via Twilio SMS (file-fallback only)."""
-
-        try:
-            # Check if we should send alert (camera-based cooldown)
-            if not self.should_send_alert(camera_name, confidence):
-                return False
-
-            # Record alert time for this camera
-            timestamp = datetime.now()
-            self.last_alert_time[camera_name] = timestamp
-            LOGGER.info(f"🕐 Recording alert time for camera {camera_name}: {timestamp}")
-
-            # Save image using simple file-based fallback (data_manager/vision_service removed)
-            keypoints = None
-            if metadata and isinstance(metadata, dict):
-                keypoints = metadata.get('keypoints')
-            await self.save_fall_image(camera_name, person_id, confidence, image, detection_info=None,
-                                       keypoints=keypoints)
-
-            # Save image locally for SMS reference
-            image_path = await self.save_image_locally(image, person_id)
-
-            # Format alert message
-            message = self.format_alert_message(
-                camera_name=camera_name,
-                alert_type="fall",
-                person_id=person_id,
-                confidence=confidence,
-                timestamp=timestamp,
-                image_path=image_path,
-                metadata=metadata
-            )
-
-            # Send SMS to all configured phone numbers
-            success_count = 0
-            for phone_number in self.to_phones:
-                try:
-                    # Log the exact numbers being used
-                    LOGGER.info(f"📱 Sending SMS from {self.from_phone} to {phone_number}")
-
-                    # Send SMS
-                    message_obj = self.client.messages.create(
-                        body=message,
-                        from_=self.from_phone,
-                        to=phone_number
-                    )
-
-                    LOGGER.info(f"📱 Fall alert sent to {phone_number}, SID: {message_obj.sid}")
-                    success_count += 1
-
-                except Exception as e:
-                    # Surface Twilio API error details when available (400 responses etc.)
-                    if hasattr(e, 'code') and hasattr(e, 'msg'):  # Twilio exception
-                        LOGGER.error(
-                            f"❌ Failed to send SMS to {phone_number}: Twilio error {getattr(e, 'code', None)} - {getattr(e, 'msg', None)} (status={getattr(e, 'status', None)})"
-                        )
-                        # Add specific guidance for common errors
-                        if getattr(e, 'code', None) == 21211:
-                            LOGGER.error(
-                                f"💡 Error 21211 means invalid 'To' number. Check that {phone_number} is in correct E.164 format (+1234567890)")
-                        elif getattr(e, 'code', None) == 21606:
-                            LOGGER.error(
-                                f"💡 Error 21606 means 'From' number {self.from_phone} is not verified/purchased in your Twilio account")
-                    else:
-                        LOGGER.error(f"❌ Failed to send SMS to {phone_number}: {e}")
-
-            # Send push notification to rigguardian.com app
-            push_success = await self.send_push_notification(
-                camera_name=camera_name,
-                alert_type="fall",
-                person_id=person_id,
-                confidence=confidence,
-                timestamp=timestamp,
-                metadata=metadata,
-                image=image
-            )
-
-            if push_success:
-                LOGGER.info("📱 Push notification sent to rigguardian.com successfully")
-            else:
-                LOGGER.warning("⚠️ Push notification failed - SMS alert still sent")
-
-            if success_count > 0:
-                LOGGER.info(f"✅ Fall alert sent successfully to {success_count}/{len(self.to_phones)} recipients")
-                return True
-            else:
-                LOGGER.error("❌ Failed to send fall alert to any recipients")
-                return False
-
-        except Exception as e:
-            LOGGER.error(f"❌ Error sending fall alert: {e}")
-            return False
-
-    async def send_push_notification(self, camera_name: str, alert_type: str, person_id: str, confidence: float,
-                                     timestamp: datetime, metadata: Optional[Dict[str, Any]] = None,
-                                     image: Optional[np.ndarray] = None) -> bool:
-        """Send push notification to rigguardian.com web app (forward alert_type)."""
-        try:
-            # Forward alert_type to webhook notification flow so payloads use the correct type
-            return await self.send_webhook_notification(camera_name=camera_name, person_id=person_id,
-                                                        confidence=confidence, timestamp=timestamp, metadata=metadata,
-                                                        image=image, alert_type=alert_type)
-        except Exception as e:
-            LOGGER.error(f"❌ Error sending push notification: {e}")
-            return False
-
-    async def send_webhook_notification(self, camera_name: str, person_id: str, confidence: float, timestamp: datetime,
-                                        metadata: Optional[Dict[str, Any]] = None, image: Optional[np.ndarray] = None,
-                                        alert_type: str = "fall") -> bool:
-        """Send notification via webhook to configured push URL(s).
-
-        This consolidates attempts so that failures to the primary format don't
-        prevent trying alternative payload shapes. Uses _try_webhook_endpoint
-        for the actual HTTP POST and logs each attempt.
+    async def save_fall_image_to_file(
+        self,
+        camera_name: str,
+        person_id: str,
+        confidence: float,
+        image_bgr: np.ndarray,
+        keypoints: Optional[Any] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
-        try:
-            import aiohttp
-            import json
-            import base64
+        Save JPG + JSON metadata (async-friendly).
+        Uses asyncio.to_thread for file I/O to avoid blocking the event loop.
+        """
+        ts = _utcnow()
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        filename = f"{ts_str}_{camera_name}_ReadImage.jpg"
+        meta_filename = f"{ts_str}_{camera_name}_ReadImage.json"
+        img_path = os.path.join(self.cfg.save_dir, filename)
+        meta_path = os.path.join(self.cfg.save_dir, meta_filename)
 
-            # Build primary payload (Railway-style)
-            primary_payload = {
-                "alert_type": alert_type,
-                "camera_name": camera_name,
-                "person_id": str(person_id),
-                "location": "55CPW",  # Added location
-                "confidence": confidence,
-                "severity": "critical",
-                "title": "Fall Alert Detected",
-                "message": f"Fall detected at 55CPW on {camera_name} with {confidence:.1%} confidence",
-                # Updated message
-                "requires_immediate_attention": True,
-                "notification_type": "fall_detection",
-                "timestamp": timestamp.isoformat(),
-                "metadata": metadata or {},
-                "actions": [
-                    {"action": "view_camera", "title": "View Camera"},
-                    {"action": "acknowledge", "title": "Acknowledge"}
-                ]
-            }
+        def _write_files():
+            # write jpg
+            ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not ok:
+                raise ValueError("Failed to encode image as JPEG")
+            with open(img_path, "wb") as f:
+                f.write(enc.tobytes())
 
-            # Include image data when available (base64)
-            if image:
-                try:
-                    primary_payload["image"] = base64.b64encode(image.data).decode("utf-8")
-                    primary_payload[
-                        "image_filename"] = f"fall_alert_{camera_name}_{timestamp.strftime('%Y%m%d_%H%M%S')}.jpg"
-                    LOGGER.info(f"📷 Added image to webhook payload ({len(image.data)} bytes)")
-                except Exception as e:
-                    LOGGER.warning(f"⚠️ Failed to attach image to payload: {e}")
-
-            # Keep a list of payloads to try in order (primary first, then alternatives)
-            payloads_to_try = [
-                (primary_payload, "primary"),
-            ]
-
-            # Add rigguardian-compatible compact payload as a secondary attempt
-            rigguardian_payload = {
-                "alert_type": alert_type,
-                "timestamp": timestamp.isoformat(),
-                "camera_name": camera_name,
-                "person_id": str(person_id),
-                "confidence": confidence,
-                "severity": "critical",
-                "location": "55CPW",  # Added location
-                "title": "🚨 Fall Alert - Immediate Action Required",
-                "message": f"Fall detected at 55CPW on {camera_name} with {confidence:.1%} confidence",
-                # Updated message
-                "requires_immediate_attention": True,
-                "notification_type": "web_push"
-            }
-            payloads_to_try.append((rigguardian_payload, "rigguardian"))
-
-            # Minimal payload as a last resort
-            minimal_payload = {
-                "alert_type": alert_type,
-                "timestamp": timestamp.isoformat(),
-                "camera_name": camera_name,
-                "person_id": str(person_id),
-                "confidence": confidence,
-                "severity": "critical",
-                "location": "55CPW",  # Added location
-                "title": "Fall Alert",
-                "message": "Fall detected at 55CPW",  # Updated message
-                "requires_immediate_attention": True,
-                "notification_type": "web_push"
-            }
-            payloads_to_try.append((minimal_payload, "minimal"))
-
-            # Try each payload in order using the helper
-            for payload, name in payloads_to_try:
-                LOGGER.info(f"🔄 Attempting webhook ({name}) to {self.push_notification_url}")
-                try:
-                    sent = await self._try_webhook_endpoint(payload, self.push_notification_url, name)
-                    if sent:
-                        LOGGER.info(f"✅ Webhook ({name}) delivered successfully")
-                        return True
-                    else:
-                        LOGGER.warning(f"⚠️ Webhook ({name}) attempt failed; trying next payload if available")
-                except Exception as e:
-                    LOGGER.error(f"❌ Exception during webhook ({name}) attempt: {e}")
-
-            LOGGER.error("❌ All webhook attempts failed")
-            return False
-
-        except ImportError:
-            LOGGER.error("❌ aiohttp not installed - install with: pip install aiohttp")
-            return False
-        except Exception as e:
-            LOGGER.error(f"❌ Webhook error: {e}")
-            return False
-
-    async def _try_webhook_endpoint(self, payload: dict, url: str, attempt_name: str) -> bool:
-        """Try sending webhook to a specific endpoint with detailed logging"""
-        try:
-            import aiohttp
-            import json
-
-            LOGGER.info(f"🔄 Trying {attempt_name} approach to {url}")
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                        url,
-                        json=payload,
-                        headers={
-                            'Content-Type': 'application/json',
-                            'User-Agent': 'FallDetectionSystem/1.0',
-                            'X-Alert-Type': 'fall',
-                            'X-Severity': 'critical',
-                            'Accept': 'application/json'
-                        },
-                        timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    response_text = await response.text()
-                    response_headers = dict(response.headers)
-
-                    LOGGER.info(f"📡 {attempt_name} response status: {response.status}")
-                    LOGGER.info(f"📋 {attempt_name} response headers: {response_headers}")
-                    LOGGER.info(f"� {attempt_name} response body: {response_text}")
-
-                    if response.status == 200:
-                        LOGGER.info(f"✅ {attempt_name} webhook sent successfully")
-                        return True
-                    else:
-                        LOGGER.error(f"❌ {attempt_name} webhook failed with status {response.status}")
-
-                        # Try to parse response as JSON for error details
-                        try:
-                            response_json = json.loads(response_text)
-                            LOGGER.error(f"🔍 {attempt_name} parsed error: {json.dumps(response_json, indent=2)}")
-                            if "error" in response_json:
-                                LOGGER.error(f"� {attempt_name} server error: {response_json['error']}")
-                            if "expected" in response_json:
-                                LOGGER.error(f"💡 {attempt_name} expected format: {response_json['expected']}")
-                            if "details" in response_json:
-                                LOGGER.error(f"📝 {attempt_name} error details: {response_json['details']}")
-                        except json.JSONDecodeError:
-                            LOGGER.error(f"📄 {attempt_name} response is not valid JSON")
-
-                        return False
-
-        except aiohttp.ClientTimeout:
-            LOGGER.error(f"❌ {attempt_name} webhook request timed out")
-            return False
-        except Exception as e:
-            LOGGER.error(f"❌ {attempt_name} webhook error: {e}")
-            return False
-
-    async def save_fall_image(self, camera_name: str, person_id: str, confidence: float, image: np.ndarray,
-                              detection_info=None, keypoints=None):
-        """Save fall detection image using the file-based fallback only."""
-
-        try:
-            LOGGER.info(f"🔄 Saving fall image (file fallback) for camera: {camera_name}")
-            LOGGER.info(f"📷 Image size: {len(image.data)} bytes, Person: {person_id}, Confidence: {confidence:.3f}")
-
-            # Save using the file-based fallback
-            file_result = await self._save_fall_image_to_file(camera_name, person_id, confidence, image,
-                                                              keypoints=keypoints)
-
-            # Wait asynchronously for 1 minute to ensure _save_fall_image_to_file has completed
-            await asyncio.sleep(60)
-
-            # If the file was saved successfully, run the annotate_image script
-            if isinstance(file_result, dict) and 'filename' in file_result:
-                filename = file_result['filename']
-                LOGGER.info(f"📂 File saved: {filename}")
-
-                # Run the annotate_image script with the filename and bounding boxes
-                if detection_info:
-                    os.environ['FALL_IMAGE_FILENAME'] = filename  # Pass the filename via environment variable
-                    # await annotate_main(detection_info)
-
-            return file_result
-
-        except Exception as e:
-            LOGGER.error(f"❌ Error in save_fall_image: {e}")
-            LOGGER.error(traceback.format_exc())
-            return {"status": "error", "method": "save_fall_image", "error": str(e)}
-
-    async def _save_fall_image_to_file(self, camera_name: str, person_id: str, confidence: float, image: np.ndarray,
-                                       keypoints=None):
-        """Fallback method to save image directly to data manager's capture directory"""
-        try:
-            from datetime import datetime
-            import os
-
-            # Use the data manager's capture directory
-            capture_dir = "/home/sunil/Documents/viam_captured_images"
-            timestamp = datetime.utcnow()
-
-            # Create filename with proper Viam naming convention for data manager to recognize
-            # Format: [timestamp]_[component_name]_[method_name].[extension]
-            timestamp_str = timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-            filename = f"{timestamp_str}_{camera_name}_ReadImage.jpg"
-            filepath = os.path.join(capture_dir, filename)
-
-            # Ensure directory exists
-            os.makedirs(capture_dir, exist_ok=True)
-
-            # Save the image
-            with open(filepath, 'wb') as f:
-                f.write(image.data)
-
-            # Create metadata file with Fall tag for data manager to process
-            metadata_filename = f"{timestamp_str}_{camera_name}_ReadImage.json"
-            metadata_filepath = os.path.join(capture_dir, metadata_filename)
-
-            import json
-            metadata_content = {
+            md = {
                 "component_name": camera_name,
                 "method_name": "ReadImage",
                 "tags": ["Fall"],
-                "timestamp": timestamp.isoformat(),
+                "timestamp": ts.isoformat(),
                 "additional_metadata": {
-                    "person_id": person_id,
+                    "person_id": str(person_id),
                     "confidence": f"{confidence:.3f}",
                     "event_type": "fall",
-                    "vision_service": "yolo11n-pose",
-                    "keypoints": keypoints
-                }
+                    "vision_service": "yolo-pose",
+                    "keypoints": keypoints,
+                },
             }
+            if extra_metadata:
+                md["additional_metadata"].update(extra_metadata)
 
-            with open(metadata_filepath, 'w') as meta_f:
-                json.dump(metadata_content, meta_f, indent=2)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(md, f, indent=2)
 
-            if os.path.exists(filepath):
-                file_size = os.path.getsize(filepath)
-                LOGGER.info(f"✅ Fall image saved: {filename} ({file_size} bytes)")
-                LOGGER.info(f"📋 Metadata saved: {metadata_filename}")
-                LOGGER.info(f"🎯 Component: {camera_name}, Tags: ['Fall']")
-                LOGGER.info("🔄 Files will sync to Viam within 1 minute")
+            return {"status": "success", "filename": filename, "path": img_path, "metadata_path": meta_path}
 
-                return {"status": "success", "method": "file_fallback", "filename": filename, "path": filepath}
-            else:
-                LOGGER.error(f"❌ Failed to save: {filepath}")
-                return {"status": "error", "method": "file_fallback", "error": "File not saved"}
-
+        try:
+            return await asyncio.to_thread(_write_files)
         except Exception as e:
-            LOGGER.error(f"❌ Error in file fallback: {e}")
-            return {"status": "error", "method": "file_fallback", "error": str(e)}
+            LOGGER.error(f"❌ save_fall_image_to_file failed: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+
+    async def save_image_locally_temp(self, image_bgr: np.ndarray, person_id: str) -> str:
+        """
+        Save a temp JPG path for SMS reference. (Twilio SMS cannot attach an image unless it's a public URL;
+        keeping this for your message content / logging.)
+        """
+        ts = _utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"fall_detection_{person_id}_{ts}.jpg"
+        out_path = os.path.join(tempfile.gettempdir(), filename)
+
+        def _write():
+            ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not ok:
+                raise ValueError("Failed to encode image as JPEG")
+            with open(out_path, "wb") as f:
+                f.write(enc.tobytes())
+            return out_path
+
+        try:
+            return await asyncio.to_thread(_write)
+        except Exception as e:
+            LOGGER.error(f"❌ Failed to save temp image: {e}", exc_info=True)
+            return ""
+
+    # -------------------- Twilio SMS (blocking SDK -> thread) --------------------
+
+    def _send_sms_blocking(self, body: str) -> int:
+        """
+        Runs in a worker thread. Returns count of successful sends.
+        """
+        if self.client is None:
+            LOGGER.warning("Twilio client not initialized; skipping SMS")
+            return 0
+
+        success = 0
+        for phone in self.to_phones:
+            try:
+                LOGGER.info(f"📱 Sending SMS from {self.from_phone} to {phone}")
+                msg = self.client.messages.create(body=body, from_=self.from_phone, to=phone)
+                LOGGER.info(f"✅ SMS sent to {phone} SID={msg.sid}")
+                success += 1
+            except TwilioRestException as e:
+                LOGGER.error(
+                    f"❌ Twilio SMS failed to {phone}: code={getattr(e, 'code', None)} "
+                    f"status={getattr(e, 'status', None)} msg={getattr(e, 'msg', str(e))}"
+                )
+            except Exception as e:
+                LOGGER.error(f"❌ SMS failed to {phone}: {e}", exc_info=True)
+
+        return success
+
+    # -------------------- Webhook push (async) --------------------
+
+    async def send_webhook_notification(
+        self,
+        camera_name: str,
+        alert_type: str,
+        person_id: str,
+        confidence: float,
+        timestamp: datetime,
+        metadata: Optional[Dict[str, Any]] = None,
+        image_bgr: Optional[np.ndarray] = None,
+    ) -> bool:
+        """
+        Sends webhook with retries and backoff. Reuses aiohttp session.
+        """
+        if not self.push_notification_url:
+            LOGGER.warning("No webhook URL configured; skipping push")
+            return False
+
+        payload = {
+            "alert_type": alert_type,
+            "camera_name": camera_name,
+            "person_id": str(person_id),
+            "location": self.cfg.location,
+            "confidence": confidence,
+            "severity": "critical",
+            "title": "Fall Alert Detected",
+            "message": f"Fall detected at {self.cfg.location} on {camera_name} with {confidence:.1%} confidence",
+            "requires_immediate_attention": True,
+            "notification_type": "fall_detection",
+            "timestamp": timestamp.isoformat(),
+            "metadata": _json_safe(metadata or {}),
+            "actions": [
+                {"action": "view_camera", "title": "View Camera"},
+                {"action": "acknowledge", "title": "Acknowledge"},
+            ],
+        }
+
+        if self.cfg.include_image_in_webhook and image_bgr is not None:
+            try:
+                b64, jpg_len = _jpeg_base64(image_bgr, quality=self.cfg.webhook_jpeg_quality)
+                payload["image"] = b64
+                payload["image_filename"] = f"fall_alert_{camera_name}_{timestamp.strftime('%Y%m%d_%H%M%S')}.jpg"
+                payload["image_encoding"] = "jpeg_base64"
+                payload["image_bytes"] = jpg_len
+            except Exception as e:
+                LOGGER.warning(f"⚠️ Failed to attach image to webhook payload: {e}")
+
+        session = await self._get_session()
+
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "FallDetectionSystem/1.0",
+            "X-Alert-Type": alert_type,
+            "X-Severity": "critical",
+            "Accept": "application/json",
+        }
+
+        for attempt in range(self.cfg.webhook_max_retries + 1):
+            try:
+                async with session.post(self.push_notification_url, json=payload, headers=headers) as resp:
+                    text = await resp.text()
+                    if 200 <= resp.status < 300:
+                        LOGGER.info(f"✅ Webhook delivered (status={resp.status})")
+                        return True
+                    LOGGER.warning(f"⚠️ Webhook failed status={resp.status} body={text[:500]}")
+            except asyncio.TimeoutError:
+                LOGGER.warning("⚠️ Webhook timeout")
+            except aiohttp.ClientError as e:
+                LOGGER.warning(f"⚠️ Webhook client error: {e}")
+            except Exception as e:
+                LOGGER.error(f"❌ Webhook exception: {e}", exc_info=True)
+
+            if attempt < self.cfg.webhook_max_retries:
+                backoff = self.cfg.webhook_backoff_base * (2 ** attempt)
+                await asyncio.sleep(backoff)
+
+        return False
+
+    # -------------------- Public API: send alert --------------------
+
+    async def send_fall_alert(
+        self,
+        camera_name: str,
+        alert_type: str,
+        person_id: str,
+        confidence: float,
+        image: np.ndarray,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Main entry: saves files + sends SMS + sends webhook.
+        Safe to call from your background notification worker.
+
+        IMPORTANT:
+        - `image` must be a BGR numpy array (OpenCV frame).
+        """
+        async with self._sem:
+            try:
+                if not self.should_send_alert(camera_name, confidence):
+                    return False
+
+                timestamp = _utcnow()
+                self.last_alert_time[camera_name] = timestamp
+                LOGGER.info(f"🕐 Alert time recorded for camera {camera_name}: {timestamp.isoformat()}")
+
+                # Save file + metadata (non-blocking I/O)
+                keypoints = (metadata or {}).get("keypoints") if isinstance(metadata, dict) else None
+                await self.save_fall_image_to_file(
+                    camera_name=camera_name,
+                    person_id=person_id,
+                    confidence=confidence,
+                    image_bgr=image,
+                    keypoints=keypoints,
+                    extra_metadata={"source": "fall_detection"},
+                )
+
+                # Save temp image path (optional; SMS can't embed local file, but you keep it for logs)
+                image_path = await self.save_image_locally_temp(image, person_id)
+
+                # Build SMS text
+                sms_body = self.format_alert_message(
+                    camera_name=camera_name,
+                    alert_type=alert_type,
+                    person_id=person_id,
+                    confidence=confidence,
+                    timestamp=timestamp,
+                    image_path=image_path,
+                    metadata=metadata,
+                )
+
+                # Send webhook push (async)
+                push_success = await self.send_webhook_notification(camera_name=camera_name,
+                                                                    alert_type=alert_type,
+                                                                    person_id=person_id,
+                                                                    confidence=confidence,
+                                                                    timestamp=timestamp,
+                                                                    metadata=metadata,
+                                                                    image_bgr=image)
+
+                # Send SMS (Twilio is blocking -> thread)
+                sms_success = 0
+                if self.client is not None and self.from_phone:
+                    sms_success = await asyncio.to_thread(self._send_sms_blocking, sms_body)
+
+                if sms_success > 0:
+                    LOGGER.info(f"✅ SMS sent to {sms_success}/{len(self.to_phones)} recipients")
+                else:
+                    LOGGER.warning("⚠️ No SMS recipients succeeded (or SMS disabled)")
+
+                if push_success:
+                    LOGGER.info("✅ Push webhook sent successfully")
+                else:
+                    LOGGER.warning("⚠️ Push webhook failed")
+
+                # Consider alert successful if either channel succeeds
+                return (sms_success > 0) or push_success
+
+            except Exception as e:
+                LOGGER.error(f"❌ Error sending fall alert: {e}", exc_info=True)
+                return False

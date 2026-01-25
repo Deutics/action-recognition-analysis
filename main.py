@@ -3,70 +3,91 @@ Main Entry Point for Posture Detection Service
 Handles multiprocess stream processing
 """
 
+import asyncio
+import multiprocessing as mp
+import json
 from multiprocessing import Process
+from typing import List, Dict, Any
+from pathlib import Path
 
 from config.posture_config import PostureConfig
 from service.posture_recognition_service import PoseRecognition
 from utils.logger import get_logger
+
+
 logger = get_logger(__name__)
 
 
-def run_posture_service(source: str, source_id: str):
+def load_streams_config(path: str) -> List[Dict[str, Any]]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Streams config not found: {p.resolve()}")
+
+    streams = json.loads(p.read_text(encoding="utf-8"))
+
+    if not isinstance(streams, list) or not streams:
+        raise ValueError("stream_sources.json must contain a non-empty list")
+
+    for i, s in enumerate(streams):
+        if "source" not in s or "source_id" not in s:
+            raise ValueError(f"Stream entry #{i} must contain 'source' and 'source_id'")
+
+    return streams
+
+
+async def run_posture_service(source: str, source_id: str):
     """
     Run posture detection service for a single stream
-    
-    Args:
-        source: Video source (file path or RTSP URL)
-        source_id: Unique identifier for stream
+    """
+    service = PoseRecognition(
+        video_source=source,
+        source_id=source_id,
+        model_path="yolo26n-pose.pt",
+        config=PostureConfig(),
+        confidence_threshold=0.5
+    )
+    await service.run()
+
+
+def process_entry(source: str, source_id: str):
+    """
+    Process entrypoint must be SYNC.
+    It creates/runs the asyncio event loop inside the child process.
     """
     try:
-        service = PoseRecognition(
-            video_source=source,
-            source_id=source_id,
-            model_path="yolo11m-pose.pt",
-            config=PostureConfig(),
-            confidence_threshold=0.5
-        )
-        service.run()
+        asyncio.run(run_posture_service(source, source_id))
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        logger.error(f"Error running service for source {source_id}: {str(e)}")
-
-
+        logger.exception(f"Process error for source {source_id}: {e}")
 
 
 def main():
-    """Main entry point - setup and run services"""
-    
-    # Define video streams to process
-    streams = [
-        # {"source": "rtsp://media.camzify.live:8554/73", "source_id": "stream_1"},
-        # {"source": "rtsp://media.camzify.live:8554/74", "source_id": "stream_2"},
-        # {"source": 0, "source_id": "stream_2"},
-        # Uncomment for local video file testing
-        {"source": "temppp.mp4", "source_id": "local_video"},
-        # {"source": "https://stream.rigguardian.com/55CPW/Lobby_Center_North/index.m3u8", "source_id": "Cam 1"},
-        # {"source": "https://stream.rigguardian.com/55CPW/Courtyard_2/index.m3u8", "source_id": "Cam 2"}
-        # {"source": "videos/googleimg12.jpg", "source_id": "local_video"},
-    ]
+    # IMPORTANT on macOS: spawn prevents many weird issues with async + ML libs
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        # already set
+        pass
+
+    streams = load_streams_config("stream_sources.json")
 
     logger.info(f"Starting {len(streams)} posture detection service(s)")
-    
-    # Start a process for each stream
+
     processes = []
-    for stream_config in streams:
-        logger.info(f"Starting process for {stream_config['source_id']}")
-        
+    for s in streams:
+        logger.info(f"Starting process for {s['source_id']}")
         p = Process(
-            target=run_posture_service,
-            args=(stream_config["source"], stream_config["source_id"]),
-            name=f"PoseService-{stream_config['source_id']}"
+            target=process_entry,   # ✅ sync wrapper, not async function
+            args=(s["source"], s["source_id"]),
+            name=f"PoseService-{s['source_id']}",
+            daemon=False
         )
         p.start()
         processes.append(p)
-    
+
     logger.info(f"All {len(processes)} processes started")
-    
-    # Wait for all processes to complete
+
     try:
         for p in processes:
             p.join()
@@ -75,9 +96,11 @@ def main():
         for p in processes:
             if p.is_alive():
                 p.terminate()
-                p.join(timeout=5)
-                if p.is_alive():
-                    p.kill()
+        for p in processes:
+            p.join(timeout=5)
+        for p in processes:
+            if p.is_alive():
+                p.kill()
         logger.info("All processes terminated")
 
 

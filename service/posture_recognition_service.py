@@ -11,6 +11,7 @@ from ultralytics import YOLO
 import numpy as np
 import torch
 import time
+import asyncio
 
 from config.posture_config import PostureConfig
 from preprocessing.keypoint_extractor import KeypointExtractor
@@ -20,6 +21,7 @@ from stream.stream_handler import StreamHandler
 from tracking.person_tracker import PersonTracker
 from notification.notification_handler import NotificationHandler
 from utils.logger import get_logger
+
 
 logger = get_logger(__name__)
 
@@ -33,7 +35,7 @@ class PoseRecognition:
     def __init__(self,
                  video_source: str,
                  source_id: str,
-                 model_path: str = "yolo11n-pose.pt",
+                 model_path: str = "yolo26n-pose.pt",
                  config: Optional[PostureConfig] = None,
                  confidence_threshold: float = 0.5,
                  infer_every_n_frames: int = 1):
@@ -73,7 +75,7 @@ class PoseRecognition:
 
     # ------------------------------------------------------------------ #
 
-    def run(self):
+    async def run(self):
         """Main low-latency loop"""
 
         try:
@@ -85,10 +87,12 @@ class PoseRecognition:
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = cap.get(cv2.CAP_PROP_FPS)
 
+            await self.notification_handler.start()
+
             logger.info(f"Stream opened - FPS: {fps}, Resolution: {width}x{height}")
 
             while True:
-                frame, motion_detected = self.stream_handler.read_frame()
+                frame, motion_detected = await asyncio.to_thread(self.stream_handler.read_frame)
                 if frame is None:
                     logger.warning("End of stream reached")
                     break
@@ -100,7 +104,8 @@ class PoseRecognition:
                 )
 
                 if run_inference:
-                    self.last_persons = self._infer_and_classify(frame)
+                    # self.last_persons = self._infer_and_classify(frame)
+                    self.last_persons = await asyncio.to_thread(self._infer_and_classify, frame)
 
                 # ---------------- FALLING TRACKING ---------------- #
                 active_ids = set()
@@ -128,11 +133,10 @@ class PoseRecognition:
                     )
 
                     if p["id"] in falling_ids:
-                        self.notification_handler.save_falling_notification(
-                            person_id=p["id"],
-                            frame=frame.copy(),
-                            source_id=self.source_id
-                        )
+                        await self.notification_handler.notify_fall(person_id=p["id"],
+                                                                    frame=frame.copy(),
+                                                                    source_id=self.source_id,
+                                                                    confidence=p["confidence"])
 
                 cv2.imshow(f"Posture Detection - Source {self.source_id}", frame)
 
@@ -140,13 +144,16 @@ class PoseRecognition:
                     logger.info("Quit requested by user")
                     break
 
+                # let other tasks (notification worker) run
+                await asyncio.sleep(0)
+
                 self.frame_index = (self.frame_index + 1) % 1_000_000
 
         except Exception as e:
             logger.error(f"Fatal error in service: {str(e)}", exc_info=True)
 
         finally:
-            self._cleanup()
+            await self._cleanup()
 
     # ------------------------------------------------------------------ #
 
@@ -197,7 +204,8 @@ class PoseRecognition:
 
     # ------------------------------------------------------------------ #
 
-    def _cleanup(self):
+    async def _cleanup(self):
         logger.info("Releasing resources...")
+        await self.notification_handler.stop()
         self.stream_handler.release_stream()
         cv2.destroyAllWindows()

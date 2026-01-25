@@ -29,7 +29,7 @@ class PostureConfig:
     
     # Confidence thresholds
     min_keypoint_confidence: float = 0.3
-    lying_duration_threshold: float = 0.5
+    lying_duration_threshold: float = 0.1
 
 
 # Posture labels as string constants
