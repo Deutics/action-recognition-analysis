@@ -1,9 +1,11 @@
 # stream/stream_handler.py
 import os
-import cv2
 import time
 import platform
-from typing import Optional, Tuple
+import subprocess
+from typing import Optional, Tuple, Union
+
+import cv2
 
 from .motion_detector import MotionDetector
 from utils.logger import get_logger
@@ -11,33 +13,25 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _is_jetson() -> bool:
-    # Simple Jetson detection
-    if platform.system().lower() != "linux":
-        return False
-    return os.path.exists("/etc/nv_tegra_release") or os.path.exists("/usr/sbin/nvpmodel")
-
-
-def _is_rtsp(src: str) -> bool:
-    return isinstance(src, str) and src.lower().startswith("rtsp://")
-
-
 class StreamHandler:
     """
     Handles video capture from webcam, RTSP, or file.
-    - Jetson: prefers GStreamer (nvv4l2decoder) for RTSP
-    - Others: uses OpenCV default backend
-    Includes motion detection and auto-reconnect on failure.
+    - Cross-platform:
+        * macOS/Windows: uses OpenCV default/FFmpeg backend
+        * Jetson (Linux aarch64): prefers GStreamer pipeline for RTSP (HW decode)
+    - Motion detector is applied on the *same sized* frames (to avoid accumulateWeighted assertion).
+    - Resizes AFTER motion detection (or you can choose to resize before, consistently).
     """
 
     def __init__(
         self,
-        source,
-        max_retries: int = 10,
+        source: Union[str, int],
+        max_retries: int = 5,
         retry_delay: float = 2.0,
-        target_size: Optional[Tuple[int, int]] = (640, 480),  # set None to disable resize
+        resize_to: Optional[Tuple[int, int]] = (640, 480),  # (w, h) or None
         prefer_gstreamer_on_jetson: bool = True,
         rtsp_latency_ms: int = 200,
+        rtsp_transport: str = "tcp",  # "tcp" or "udp"
     ):
         self.source = source
         self.capture: Optional[cv2.VideoCapture] = None
@@ -45,164 +39,208 @@ class StreamHandler:
 
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self.target_size = target_size
 
+        self.resize_to = resize_to
         self.prefer_gstreamer_on_jetson = prefer_gstreamer_on_jetson
         self.rtsp_latency_ms = rtsp_latency_ms
+        self.rtsp_transport = rtsp_transport
 
-        self._opened_backend = "none"  # "gst-hevc", "gst-h264", "opencv"
+        # Internal
+        self._last_open_mode = "unknown"  # "gstreamer" | "opencv"
+        self._last_error = ""
 
-    # ----------------------------
-    # GStreamer pipelines (Jetson)
-    # ----------------------------
-    def _gst_url(self, url: str) -> str:
-        # Escape '&' for GStreamer property parsing
+    # -------------------------
+    # Platform helpers
+    # -------------------------
+    def _is_rtsp(self) -> bool:
+        return isinstance(self.source, str) and self.source.lower().startswith("rtsp://")
+
+    def _is_jetson(self) -> bool:
+        # Jetson is typically Linux + aarch64, and has nv* gstreamer plugins
+        if platform.system().lower() != "linux":
+            return False
+        if platform.machine().lower() not in ("aarch64", "arm64"):
+            return False
+
+        # Optional: check if nvv4l2decoder exists (best signal)
+        try:
+            p = subprocess.run(
+                ["gst-inspect-1.0", "nvv4l2decoder"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return p.returncode == 0
+        except Exception:
+            # If gst-inspect not available, still consider it Jetson by arch
+            return True
+
+    def _url_escape_for_gst(self, url: str) -> str:
+        # GStreamer sometimes treats '&' as separator in property strings.
+        # Percent-encode it so rtspsrc location parses correctly.
         return url.replace("&", "%26")
 
-    def _gst_pipeline_jetson_hevc(self, url: str) -> str:
-        url_gst = self._gst_url(url)
-        return (
-            f'rtspsrc location="{url_gst}" protocols=tcp latency={self.rtsp_latency_ms} drop-on-latency=true ! '
-            f'queue ! rtph265depay ! queue ! h265parse ! queue ! nvv4l2decoder ! '
-            f'queue ! nvvidconv ! video/x-raw,format=BGRx ! '
+    def _probe_rtsp_codec(self, url: str) -> Optional[str]:
+        """
+        Best-effort probe to identify codec (h264/hevc).
+        Uses ffprobe if available. If it fails, returns None (we'll still try).
+        """
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-rtsp_transport", self.rtsp_transport,
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=nk=1:nw=1",
+                url,
+            ]
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=5)
+            codec = out.decode("utf-8", errors="ignore").strip().lower()
+            if codec:
+                return codec  # e.g. "h264" or "hevc"
+        except Exception:
+            return None
+        return None
+
+    # -------------------------
+    # GStreamer pipelines (Jetson)
+    # -------------------------
+    def _gst_pipeline_jetson(self, url: str, codec: Optional[str]) -> str:
+        """
+        Explicit Jetson RTSP pipeline for OpenCV appsink output BGR.
+        Supports HEVC/H264. If codec unknown, default to decodebin (less ideal).
+        """
+        url_gst = self._url_escape_for_gst(url)
+        protocols = "tcp" if self.rtsp_transport.lower() == "tcp" else "udp"
+        latency = int(self.rtsp_latency_ms)
+
+        # Prefer explicit depay/parse/decoder. This is what tends to work reliably on Jetson.
+        if codec == "hevc":
+            depay_parse_decode = "rtph265depay ! h265parse ! nvv4l2decoder"
+        elif codec == "h264":
+            depay_parse_decode = "rtph264depay ! h264parse ! nvv4l2decoder"
+        else:
+            # Unknown codec: try decodebin (may fail on some HEVC streams, but better than nothing)
+            depay_parse_decode = "decodebin"
+
+        # nvvidconv: NVMM -> CPU accessible; convert to BGR for OpenCV
+        pipeline = (
+            f'rtspsrc location="{url_gst}" protocols={protocols} latency={latency} drop-on-latency=true ! '
+            f'{depay_parse_decode} ! '
+            f'nvvidconv ! video/x-raw,format=BGRx ! '
             f'videoconvert ! video/x-raw,format=BGR ! '
             f'appsink drop=true max-buffers=1 sync=false'
         )
+        return pipeline
 
-    def _gst_pipeline_jetson_h264(self, url: str) -> str:
-        url_gst = self._gst_url(url)
-        return (
-            f'rtspsrc location="{url_gst}" protocols=tcp latency={self.rtsp_latency_ms} drop-on-latency=true ! '
-            f'queue ! rtph264depay ! queue ! h264parse ! queue ! nvv4l2decoder ! '
-            f'queue ! nvvidconv ! video/x-raw,format=BGRx ! '
-            f'videoconvert ! video/x-raw,format=BGR ! '
-            f'appsink drop=true max-buffers=1 sync=false'
-        )
+    # -------------------------
+    # Open/close
+    # -------------------------
+    def _open_capture(self) -> cv2.VideoCapture:
+        """
+        Decide best backend and open capture.
+        """
+        # 1) Jetson RTSP via GStreamer (preferred)
+        if self.prefer_gstreamer_on_jetson and self._is_rtsp() and self._is_jetson():
+            for codec_try in ("hevc", "h264", None):
+                gst = self._gst_pipeline_jetson(self.source, codec_try)
+                logger.info(f"Opening RTSP via GStreamer on Jetson (codec_try={codec_try})")
+                cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+                self._last_open_mode = "gstreamer"
+                if cap.isOpened():
+                    return cap
+                cap.release()
+            logger.warning("GStreamer open failed; falling back to OpenCV/FFmpeg")
 
-    # ----------------------------
-    # Open helpers
-    # ----------------------------
-    def _open_with_gstreamer(self, url: str) -> bool:
-        # Try HEVC then H264 (safe even if stream is only one of them)
-        gst_hevc = self._gst_pipeline_jetson_hevc(url)
-        logger.info("Opening RTSP via GStreamer on Jetson (try=hevc)")
-        cap = cv2.VideoCapture(gst_hevc, cv2.CAP_GSTREAMER)
-        if cap.isOpened():
-            self.capture = cap
-            self._opened_backend = "gst-hevc"
-            return True
-        cap.release()
+            # fallback to OpenCV default below
+            logger.warning("GStreamer open failed; falling back to OpenCV/FFmpeg")
 
-        gst_h264 = self._gst_pipeline_jetson_h264(url)
-        logger.info("Opening RTSP via GStreamer on Jetson (try=h264)")
-        cap = cv2.VideoCapture(gst_h264, cv2.CAP_GSTREAMER)
-        if cap.isOpened():
-            self.capture = cap
-            self._opened_backend = "gst-h264"
-            return True
-        cap.release()
-        return False
-
-    def _open_with_opencv(self) -> bool:
+        # 2) Default OpenCV/FFmpeg path (mac/windows/linux)
         logger.info("Opening source via OpenCV default backend")
         cap = cv2.VideoCapture(self.source)
-        if cap.isOpened():
-            self.capture = cap
-            self._opened_backend = "opencv"
-            return True
-        cap.release()
-        return False
+        self._last_open_mode = "opencv"
+        if not cap.isOpened():
+            self._last_error = "VideoCapture not opened (opencv)"
+        return cap
 
-    # ----------------------------
-    # Public API
-    # ----------------------------
     def start_stream(self):
         """Initialize video capture with retries."""
-        self.release_stream()
         self.motion_detector.reset()
 
         retries = 0
-        last_err = "unknown"
-
         while retries < self.max_retries:
-            try:
-                opened = False
-
-                if (
-                    self.prefer_gstreamer_on_jetson
-                    and _is_jetson()
-                    and _is_rtsp(self.source)
-                ):
-                    opened = self._open_with_gstreamer(self.source)
-                    if not opened:
-                        logger.warning("GStreamer open failed; falling back to OpenCV/FFmpeg")
-
-                if not opened:
-                    opened = self._open_with_opencv()
-
-                if not opened or self.capture is None or not self.capture.isOpened():
-                    last_err = "VideoCapture not opened"
-                    raise RuntimeError(last_err)
-
-                logger.info(f"Stream successfully opened ({self._opened_backend}): {self.source}")
-                # Reset background after successful open
+            self.capture = self._open_capture()
+            if self.capture is not None and self.capture.isOpened():
+                logger.info(f"Stream successfully opened ({self._last_open_mode}): {self.source}")
+                # IMPORTANT: reset motion detector again after open to avoid stale sizes
                 self.motion_detector.reset()
                 return
 
-            except Exception as e:
-                last_err = str(e)
-                retries += 1
-                logger.warning(
-                    f"Cannot open stream '{self.source}', retrying in {self.retry_delay}s "
-                    f"(Attempt {retries}/{self.max_retries}) | err={last_err}"
-                )
-                self.release_stream()
-                self.motion_detector.reset()
-                time.sleep(self.retry_delay)
+            retries += 1
+            logger.warning(
+                f"Cannot open stream '{self.source}', retrying in {self.retry_delay}s "
+                f"(Attempt {retries}/{self.max_retries}) | err={self._last_error}"
+            )
+            try:
+                if self.capture:
+                    self.capture.release()
+            except Exception:
+                pass
+            time.sleep(self.retry_delay)
+            self.motion_detector.reset()
 
         logger.error(
-            f"Failed to open video source after {self.max_retries} attempts: {self.source} | last={last_err}"
+            f"Failed to open video source after {self.max_retries} attempts: {self.source} | last={self._last_error}"
         )
         raise ValueError(f"Cannot open video source: {self.source}")
 
-    def _resize_if_needed(self, frame):
-        if self.target_size is None:
-            return frame
-        w, h = self.target_size
-        # simple resize (fast). If you want letterbox, tell me.
-        return cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
-
+    # -------------------------
+    # Read frames
+    # -------------------------
     def read_frame(self):
         """
         Read a frame from the video source.
         Returns:
-            tuple: (frame, motion_detected)
+            (frame, motion_detected)
+        Notes:
+            - Motion detection runs on the *original frame size* consistently.
+            - Resize is applied AFTER motion detection so background model size stays stable.
         """
         if self.capture is None:
             raise ValueError("Capture not started. Call 'start_stream()' first.")
 
         ret, frame = self.capture.read()
-
         if not ret or frame is None:
-            logger.warning(f"Failed to read frame from '{self.source}', reconnecting...")
-            self.release_stream()
-            time.sleep(self.retry_delay)
-            self.start_stream()
-            return None, False
-
-        # Detect motion on the *original* frame size for consistency
-        motion_detected = self.motion_detector.detect_motion(frame)
-
-        # Now resize for downstream model/UI if needed
-        frame = self._resize_if_needed(frame)
-        return frame, motion_detected
-
-    def release_stream(self):
-        """Release the video capture resource."""
-        if self.capture is not None:
+            logger.warning(f"Failed to read frame from '{self.source}', attempting reconnect...")
             try:
                 self.capture.release()
             except Exception:
                 pass
-            self.capture = None
-            logger.info(f"Stream released: {self.source}")
+            time.sleep(self.retry_delay)
+            self.motion_detector.reset()
+            # Let caller handle None and keep looping
+            return None, False
+
+        # Motion detection BEFORE resize to keep sameSize(src,dst) stable
+        motion_detected = self.motion_detector.detect_motion(frame)
+
+        # Resize after motion detection (if configured)
+        if self.resize_to is not None:
+            w, h = self.resize_to
+            if frame.shape[1] != w or frame.shape[0] != h:
+                frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        return frame, motion_detected
+
+    # -------------------------
+    # Release
+    # -------------------------
+    def release_stream(self):
+        """Release the video capture resource."""
+        if self.capture:
+            try:
+                self.capture.release()
+            finally:
+                self.capture = None
+                logger.info(f"Stream released: {self.source}")
