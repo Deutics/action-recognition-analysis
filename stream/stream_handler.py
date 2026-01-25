@@ -23,6 +23,7 @@ class StreamHandler:
     def start_stream(self):
         """Initialize video capture with retries."""
         self.capture = cv2.VideoCapture(self.source)
+        self.motion_detector.reset()
         retries = 0
 
         while not self.capture.isOpened() and retries < self.max_retries:
@@ -32,6 +33,7 @@ class StreamHandler:
             time.sleep(self.retry_delay)
             self.capture.release()
             self.capture = cv2.VideoCapture(self.source)
+            self.motion_detector.reset()
             retries += 1
 
         if not self.capture.isOpened():
@@ -56,6 +58,7 @@ class StreamHandler:
             self.capture.release()
             time.sleep(self.retry_delay)
             self.capture = cv2.VideoCapture(self.source)
+            self.motion_detector.reset()
             return None, False
 
         motion_detected = self.motion_detector.detect_motion(frame)
