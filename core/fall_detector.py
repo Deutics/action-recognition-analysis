@@ -83,7 +83,7 @@ class FallDetectionProcessor:
             kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
             posture, confidence = self.classifier.classify(kpts, h)
 
-            print(f"Stream {stream_id} | Person {person_id} → {posture}")
+            # print(f"Stream {stream_id} | Person {person_id} → {posture}")
 
             # Alert logic (frame-based, no cooldown)
             if posture == "Lying":
