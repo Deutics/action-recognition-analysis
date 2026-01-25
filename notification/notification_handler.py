@@ -26,11 +26,6 @@ class NotificationHandler:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self._notification_pusher = FallDetectionAlerts({})
-        logger.info(
-            f"Alert config: twilio_client={'yes' if self._notification_pusher.client else 'no'} | "
-            f"from={self._notification_pusher.from_phone} | to_count={len(self._notification_pusher.to_phones)} | "
-            f"webhook_set={bool(self._notification_pusher.push_notification_url)}"
-        )
         self._queue: asyncio.Queue[AlertJob] = asyncio.Queue(maxsize=queue_size)
 
         self._workers = []
