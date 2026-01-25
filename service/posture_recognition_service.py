@@ -125,13 +125,13 @@ class PoseRecognition:
                     if p["id"] in falling_ids:
                         label = "Falling"
 
-                    # frame = self.frame_annotator.annotate_frame(
-                    #     frame,
-                    #     posture_label=label,
-                    #     confidence=p["confidence"],
-                    #     keypoints=p["keypoints"],
-                    #     person_id=p["id"]
-                    # )
+                    frame = self.frame_annotator.annotate_frame(
+                        frame,
+                        posture_label=label,
+                        confidence=p["confidence"],
+                        keypoints=p["keypoints"],
+                        person_id=p["id"]
+                    )
 
                     if p["id"] in falling_ids:
                         await self.notification_handler.notify_fall(person_id=p["id"],
