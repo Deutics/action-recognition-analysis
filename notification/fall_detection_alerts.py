@@ -101,7 +101,7 @@ def _json_safe(obj: Any):
 @dataclass
 class AlertConfig:
     min_confidence: float = 0.7
-    cooldown_seconds: int = 120
+    cooldown_seconds: int = 30
     webhook_timeout_sec: int = 10
     webhook_max_retries: int = 2
     webhook_backoff_base: float = 0.7  # seconds
@@ -473,6 +473,7 @@ class FallDetectionAlerts:
                 sms_success = 0
                 if self.client is not None and self.from_phone:
                     sms_success = await asyncio.to_thread(self._send_sms_blocking, sms_body)
+                    # pass
 
                 if sms_success > 0:
                     LOGGER.info(f"✅ SMS sent to {sms_success}/{len(self.to_phones)} recipients")

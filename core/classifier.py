@@ -95,20 +95,99 @@ class PostureClassifier:
         is_inverted = hip_y < shoulder_y
 
         # Lying
-        torso_dev_horiz = self.geo.calculate_deviation_from_horizontal(torso_angle)
-        grounded_votes = 0
+        # torso_dev_horiz = self.geo.calculate_deviation_from_horizontal(torso_angle)
+        # grounded_votes = 0
+        #
+        # if torso_dev_horiz < self.config.horizontal_deviation_threshold:
+        #     grounded_votes += 1
+        # if body_compactness is not None and body_compactness < 0.6:
+        #     grounded_votes += 1
+        # if gravity_proj_ratio < 0.45:
+        #     grounded_votes += 1
+        # if is_inverted:
+        #     grounded_votes += 2
+        #
+        # if grounded_votes >= 2:
+        #     return (PostureLabel.LYING, min(0.95, 0.7 + 0.1 * grounded_votes))
 
-        if torso_dev_horiz < self.config.horizontal_deviation_threshold:
-            grounded_votes += 1
-        if body_compactness is not None and body_compactness < 0.6:
-            grounded_votes += 1
-        if gravity_proj_ratio < 0.45:
-            grounded_votes += 1
-        if is_inverted:
-            grounded_votes += 2
+        # -------------------------
+        # LYING (improved, floor-aware)
+        # -------------------------
 
-        if grounded_votes >= 2:
-            return (PostureLabel.LYING, min(0.95, 0.7 + 0.1 * grounded_votes))
+        # Count how many keypoints we actually have (after extractor filtering)
+        present_kpt_keys = [
+            'shoulder_left', 'shoulder_right', 'hip_left', 'hip_right',
+            'knee_left', 'knee_right', 'ankle_left', 'ankle_right'
+        ]
+        present_count = sum(1 for k in present_kpt_keys if kpts.get(k))
+
+        # Need frame height for floor/height ratios
+        if self.frame_height is None and frame_height is not None:
+            self.frame_height = frame_height
+
+        # Compute spread + aspect ratio using available kpts
+        xs, ys = [], []
+        for k in present_kpt_keys + ['shoulder_mid', 'hip_mid']:
+            if kpts.get(k):
+                xs.append(kpts[k][0])
+                ys.append(kpts[k][1])
+
+        # Hard gate: not enough info => never claim LYING
+        if len(xs) >= self.config.lying_min_points and self.frame_height:
+            width = max(xs) - min(xs)
+            height = max(ys) - min(ys)
+            aspect = (width / (height + 1e-6))
+            height_ratio = height / float(self.frame_height)
+            floor_contact = (max(ys) / float(self.frame_height))
+
+            # torso horizontal check
+            torso_dev_horiz = self.geo.calculate_deviation_from_horizontal(torso_angle)
+
+            # body axis check (shoulder_mid -> ankle_mid is best)
+            body_axis_dev_horiz = None
+            if kpts.get('shoulder_mid') and kpts.get('ankle_mid'):
+                body_axis_angle = self.geo.calculate_angle_from_horizontal(
+                    kpts['shoulder_mid'], kpts['ankle_mid']
+                )
+                body_axis_dev_horiz = self.geo.calculate_deviation_from_horizontal(body_axis_angle)
+
+            # Votes (but only after gates are satisfied)
+            grounded_votes = 0
+
+            # Strong gates first
+            gates_ok = True
+
+            if torso_dev_horiz > self.config.lying_torso_dev_horiz_max:
+                gates_ok = False
+
+            if body_axis_dev_horiz is None or body_axis_dev_horiz > self.config.lying_body_axis_dev_horiz_max:
+                gates_ok = False
+
+            if aspect < self.config.lying_aspect_ratio_min:
+                gates_ok = False
+
+            if height_ratio > self.config.lying_height_ratio_max:
+                gates_ok = False
+
+            if floor_contact < self.config.lying_floor_contact_min:
+                gates_ok = False
+
+            if gravity_proj_ratio > self.config.lying_gravity_proj_ratio_max:
+                gates_ok = False
+
+            if gates_ok:
+                grounded_votes += 2  # if you passed all gates, it’s already strong
+
+                # Optional extra softness: compactness check
+                if body_compactness is not None and body_compactness < 0.55:
+                    grounded_votes += 1
+
+                # Optional: inverted skeleton is very suspicious (can be fall)
+                if is_inverted:
+                    grounded_votes += 1
+
+                conf = min(0.98, 0.78 + 0.06 * grounded_votes)
+                return (PostureLabel.LYING, conf)
 
         # Sitting
         if avg_knee_angle is not None and avg_knee_angle < self.config.sitting_knee_angle_max:

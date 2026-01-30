@@ -193,7 +193,10 @@ class PoseRecognition:
             kpt_conf = person_keypoints[:, 2].tolist()
 
             kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
-            label, confidence = self.classifier.classify(kpts, frame_h)
+
+            self.classifier.set_frame_dimensions(frame.shape[0], frame.shape[1])
+            label, confidence = self.classifier.classify(kpts, frame.shape[0])
+            # label, confidence = self.classifier.classify(kpts, frame_h)
 
             persons.append({
                 "id": person_id,
