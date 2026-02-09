@@ -174,7 +174,7 @@ class StreamHandler:
 
         try:
             data = mapinfo.data
-            frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3)).copy()
+            frame = np.frombuffer(data, dtype=np.uint8).copy().reshape((height, width, 3))
             return frame, True
         finally:
             buf.unmap(mapinfo)
