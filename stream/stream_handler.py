@@ -128,14 +128,37 @@ class StreamHandler:
             return False
 
     def _gst_read_frame(self, timeout_sec: float = 2.0):
-        """Pull a frame from appsink; returns (frame, ok)."""
+        """Pull a frame from appsink; returns (frame, ok). Compatible with GI bindings."""
         from gi.repository import Gst  # type: ignore
 
         if self._gst_sink is None:
             return None, False
 
-        # Try pulling a sample; this blocks up to timeout_sec
-        sample = self._gst_sink.try_pull_sample(int(timeout_sec * 1e9))
+        timeout_ns = int(timeout_sec * 1e9)
+
+        sample = None
+
+        # Preferred: try-pull-sample with timeout (available in many GI builds)
+        try:
+            sample = self._gst_sink.emit("try-pull-sample", timeout_ns)
+        except Exception:
+            sample = None
+
+        # Fallback: pull-sample (blocking). We'll keep it safe by limiting how long we wait
+        # with a simple time-bounded loop using non-blocking try-pull if unavailable.
+        if sample is None:
+            t0 = time.time()
+            while (time.time() - t0) < timeout_sec:
+                try:
+                    # Some builds allow pull-sample without blocking too long if max-buffers=1 drop=true
+                    sample = self._gst_sink.emit("pull-sample")
+                except Exception:
+                    sample = None
+
+                if sample is not None:
+                    break
+                time.sleep(0.01)
+
         if sample is None:
             return None, False
 
@@ -148,6 +171,7 @@ class StreamHandler:
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if not ok:
             return None, False
+
         try:
             data = mapinfo.data
             frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
