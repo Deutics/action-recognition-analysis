@@ -83,14 +83,14 @@ class PoseRecognition:
             logger.info(f"Starting posture detection on source: {self.video_source}")
             self.stream_handler.start_stream()
 
-            cap = self.stream_handler.capture
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
+            # cap = self.stream_handler.capture
+            # width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            # height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # fps = cap.get(cv2.CAP_PROP_FPS)
 
             await self.notification_handler.start()
 
-            logger.info(f"Stream opened - FPS: {fps}, Resolution: {width}x{height}")
+            # logger.info(f"Stream opened - FPS: {fps}, Resolution: {width}x{height}")
 
             while True:
                 frame, motion_detected = await asyncio.to_thread(self.stream_handler.read_frame)
