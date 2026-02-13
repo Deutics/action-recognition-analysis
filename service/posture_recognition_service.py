@@ -134,9 +134,10 @@ class PoseRecognition:
                 )
 
                 if run_inference:
-                    self.last_persons = await asyncio.to_thread(
-                        self._infer_and_classify, frame
-                    )
+                    # self.last_persons = await asyncio.to_thread(
+                    #     self._infer_and_classify, frame
+                    # )
+                    self.last_persons = self._infer_and_classify(frame)
 
                 # -------------------------
                 # Falling tracking
