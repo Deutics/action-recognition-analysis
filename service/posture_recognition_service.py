@@ -183,7 +183,7 @@ class PoseRecognition:
                         person_id="123456",
                         frame=frame.copy(),
                         source_id=self.source_id,
-                        confidence="100"
+                        confidence=100
                     )
 
                 if ENABLE_UI == "1":
@@ -209,15 +209,47 @@ class PoseRecognition:
 
         persons = []
 
-        keypoints_data, track_ids = self.backend.infer(frame)
+        # ----------------------------------
+        # TensorRT preprocessing
+        # ----------------------------------
+        if hasattr(self.backend, "infer"):  # TRT backend
 
-        if keypoints_data is None:
-            return persons
+            img = cv2.resize(frame, (640, 640))
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = img.astype(np.float32) / 255.0
 
-        frame_h, frame_w = frame.shape[:2]
+            img = np.transpose(img, (2, 0, 1))  # HWC → CHW
+            img = np.expand_dims(img, axis=0)  # add batch
+
+            keypoints_data, track_ids = self.backend.infer(img)
+
+        else:
+            # PyTorch / YOLO path
+            results = self.backend.track(
+                frame,
+                conf=self.confidence_threshold,
+                persist=True,
+                verbose=False
+            )
+
+            if not results:
+                return persons
+
+            result = results[0]
+            if result.keypoints is None:
+                return persons
+
+            keypoints_data = result.keypoints.data.cpu().numpy()
+
+            track_ids = []
+            if result.boxes is not None and result.boxes.id is not None:
+                track_ids = result.boxes.id.cpu().numpy().astype(int)
+
+        # ----------------------------------
+        # Post-process shared logic
+        # ----------------------------------
 
         for idx, person_keypoints in enumerate(keypoints_data):
-
             person_id = track_ids[idx] if idx < len(track_ids) else idx
 
             kpt_coords = person_keypoints[:, :2]
@@ -225,13 +257,14 @@ class PoseRecognition:
 
             kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
 
-            self.classifier.set_frame_dimensions(frame_h, frame_w)
-            label, confidence = self.classifier.classify(kpts, frame_h)
+            self.classifier.set_frame_dimensions(frame.shape[0], frame.shape[1])
+            label, confidence = self.classifier.classify(kpts, frame.shape[0])
+            confidence = float(confidence)
 
             persons.append({
-                "id": int(person_id),
+                "id": person_id,
                 "label": label,
-                "confidence": float(confidence),
+                "confidence": confidence,
                 "keypoints": kpts
             })
 
