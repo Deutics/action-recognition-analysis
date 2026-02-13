@@ -180,10 +180,10 @@ class PoseRecognition:
                 # Generating notifications for testing on jetson
                 if self.frame_index % 100 == 0:
                     await self.notification_handler.notify_fall(
-                        person_id=p["id"],
+                        person_id="123456",
                         frame=frame.copy(),
                         source_id=self.source_id,
-                        confidence=p["confidence"]
+                        confidence="100"
                     )
 
                 if ENABLE_UI == "1":
