@@ -1,5 +1,6 @@
 # inference/tensorrt_backend.py
 import os
+import cv2
 import numpy as np
 import tensorrt as trt
 
