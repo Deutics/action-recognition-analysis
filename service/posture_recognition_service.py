@@ -135,6 +135,8 @@ class PoseRecognition:
                     (self.frame_index % self.infer_every_n_frames == 0)
                 )
 
+                run_inference = True
+
                 if run_inference:
                     # self.last_persons = await asyncio.to_thread(
                     #     self._infer_and_classify, frame
@@ -179,17 +181,14 @@ class PoseRecognition:
                             confidence=p["confidence"]
                         )
 
-                if self.frame_index % 100 == 0:
-                    logger.info(f"Frame count: {self.frame_index}")
-
                 # Generating notifications for testing on jetson
-                if (self.frame_index + 1) % 1000 == 0:
-                    await self.notification_handler.notify_fall(
-                        person_id="123456",
-                        frame=frame.copy(),
-                        source_id=self.source_id,
-                        confidence=100
-                    )
+                # if (self.frame_index + 1) % 1000 == 0:
+                #     await self.notification_handler.notify_fall(
+                #         person_id="123456",
+                #         frame=frame.copy(),
+                #         source_id=self.source_id,
+                #         confidence=100
+                #     )
 
                 if ENABLE_UI == "1":
                     cv2.imshow(f"Posture Detection - {self.source_id}", frame)
