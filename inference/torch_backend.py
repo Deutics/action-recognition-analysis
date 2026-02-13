@@ -1,25 +1,33 @@
-from prompt_toolkit.contrib.telnet.log import logger
-from sympy.printing.pytorch import torch
-from torch.xpu import device
-from ultralytics import YOLO
-import numpy as np
-from .backend import PoseBackend
-from utils.logger import get_logger
+# inference/torch_backend.py
 
+import numpy as np
+from sympy.printing.pytorch import torch
+from ultralytics import YOLO
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class TorchBackend(PoseBackend):
+class TorchBackend:
+    """
+    Torch CPU backend (Mac / fallback)
+    """
 
     def __init__(self, model_path: str):
+        logger.info(f"Loading YOLO model (Torch CPU): {model_path}")
         self.model = YOLO(model_path)
-        device = 'cpu'
-        device = 'cuda' if torch.cuda.is_available() else device
-        device = 'mps' if torch.mps.is_available() else device
+        device = "cpu"
+        device = "cuda" if torch.cuda.is_available() else device
+        device = "mps" if torch.mps.is_available() else device
+
         self.model.to(device)
 
-    def infer(self, frame: np.ndarray):
+    def infer(self, frame):
+        """
+        Returns:
+            keypoints_data (np.ndarray)
+            track_ids (list[int])
+        """
 
         results = self.model.track(
             frame,
@@ -29,17 +37,17 @@ class TorchBackend(PoseBackend):
         )
 
         if not results:
-            return None, []
+            return None, None
 
         result = results[0]
 
         if result.keypoints is None:
-            return None, []
+            return None, None
 
-        keypoints = result.keypoints.data.cpu().numpy()
+        keypoints_data = result.keypoints.data.cpu().numpy()
 
         track_ids = []
         if result.boxes is not None and result.boxes.id is not None:
-            track_ids = result.boxes.id.cpu().numpy().astype(int)
+            track_ids = result.boxes.id.cpu().numpy().astype(int).tolist()
 
-        return keypoints, track_ids
+        return keypoints_data, track_ids

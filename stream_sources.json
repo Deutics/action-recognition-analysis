@@ -1,5 +1,27 @@
 [
-  {"source_id":  "Lobby_Center_North", "source": "rtsp://192.168.1.200:554/chID=25&streamType=sub"},
-  {"source_id":  "CPW_Awning_N_Facing", "source": "rtsp://192.168.1.200:554/chID=16&streamType=sub"},
-  {"source_id":  "Services_Area", "source": "rtsp://192.168.1.200:554/chID=9&streamType=sub"}
+  {
+    "source_id":  "Lobby_Center_North",
+    "source": "rtsp://192.168.1.200:554/chID=25&streamType=sub",
+    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
+  },
+  {
+    "source_id":  "CPW_Awning_N_Facing",
+    "source": "rtsp://192.168.1.200:554/chID=16&streamType=sub",
+    "normalized_zone_vertices": "[(0.010, 0.698), (0.153, 0.698), (0.990, 0.948), (0.010, 0.948)]"
+  },
+  {
+    "source_id":  "66th_St_East_Facing",
+    "source": "rtsp://192.168.1.200:554/chID=28&streamType=sub",
+    "normalized_zone_vertices": "[(0.727, 0.490), (0.969, 0.333), (0.852, 0.998), (0.001, 0.998)]"
+  },
+  {
+    "source_id":  "CPW_South_Cam",
+    "source": "rtsp://192.168.1.200:554/chID=7&streamType=sub",
+    "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
+  },
+  {
+    "source_id":  "Local Video",
+    "source": "temppp.mp4",
+    "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
+  }
 ]

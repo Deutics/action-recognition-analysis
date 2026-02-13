@@ -28,7 +28,8 @@ class FrameAnnotator:
                        posture_label: str, 
                        confidence: float,
                        person_id: Optional[int] = None,
-                       keypoints: Dict[str, Tuple[float, float]] = None) -> np.ndarray:
+                       keypoints: Dict[str, Tuple[float, float]] = None,
+                       region_of_interest: np.ndarray = None) -> np.ndarray:
         """
         Annotate frame with posture label above person's bounding box
         
@@ -65,7 +66,22 @@ class FrameAnnotator:
                 label_y = max(y_min - 10, 25)
                 
                 cv2.putText(frame, text, (label_x, label_y), font, font_scale, color, thickness)
+
+            # frame = FrameAnnotator.draw_region_of_interest(frame, region_of_interest)
             FrameAnnotator._draw_keypoints(frame, keypoints)
+        return frame
+
+    @staticmethod
+    def draw_region_of_interest(frame: np.ndarray, vertices: np.array) -> np.ndarray:
+        overlay = frame.copy()
+        # Fill polygon in RED (BGR)
+        cv2.fillPoly(overlay, [vertices], color=(0, 0, 255))
+        # Alpha blend
+        alpha = 0.30  # 0 = transparent, 1 = solid
+        frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        # Draw polygon border (green)
+        cv2.polylines(frame, [vertices], isClosed=True, color=(0, 100, 255), thickness=2)
+
         return frame
     
     @staticmethod

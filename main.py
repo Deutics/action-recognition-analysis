@@ -9,6 +9,7 @@ import json
 from multiprocessing import Process
 from typing import List, Dict, Any
 from pathlib import Path
+import ast
 
 from config.posture_config import PostureConfig
 from service.posture_recognition_service import PoseRecognition
@@ -35,7 +36,7 @@ def load_streams_config(path: str) -> List[Dict[str, Any]]:
     return streams
 
 
-async def run_posture_service(source: str, source_id: str):
+async def run_posture_service(source: str, source_id: str, normalized_zone_vertices=None):
     """
     Run posture detection service for a single stream
     """
@@ -44,18 +45,19 @@ async def run_posture_service(source: str, source_id: str):
         source_id=source_id,
         model_path="yolo26n-pose.pt",
         config=PostureConfig(),
-        confidence_threshold=0.5
+        confidence_threshold=0.5,
+        normalized_zone_vertices=normalized_zone_vertices
     )
     await service.run()
 
 
-def process_entry(source: str, source_id: str):
+def process_entry(source: str, source_id: str, normalized_zone_vertices=None):
     """
     Process entrypoint must be SYNC.
     It creates/runs the asyncio event loop inside the child process.
     """
     try:
-        asyncio.run(run_posture_service(source, source_id))
+        asyncio.run(run_posture_service(source, source_id, normalized_zone_vertices))
     except KeyboardInterrupt:
         pass
     except Exception as e:
@@ -71,16 +73,21 @@ def main():
         pass
 
     streams = load_streams_config("stream_sources.json")
-    streams = streams[0:1]
+    streams = streams[4:5]
 
     logger.info(f"Starting {len(streams)} posture detection service(s)")
 
     processes = []
     for s in streams:
+        zone = None
+        if "normalized_zone_vertices" in s and s["normalized_zone_vertices"]:
+            # your JSON stores it as a string like "[(0.1,0.2), ...]"
+            zone = ast.literal_eval(s["normalized_zone_vertices"])
+
         logger.info(f"Starting process for {s['source_id']}")
         p = Process(
-            target=process_entry,   # ✅ sync wrapper, not async function
-            args=(s["source"], s["source_id"]),
+            target=process_entry,
+            args=(s["source"], s["source_id"], zone),
             name=f"PoseService-{s['source_id']}",
             daemon=False
         )
