@@ -120,41 +120,107 @@ class TensorRTBackend:
         # Reallocate all buffers now that shapes are known
         self._allocate_io()
 
-    def infer(self, input_array: np.ndarray) -> dict:
+    def infer(self, input_array: np.ndarray):
         """
-        input_array should match engine input shape and dtype.
-        Returns dict of output_name -> numpy array (reshaped).
+        Expects BGR image (H,W,3)
+        Returns:
+            keypoints_data: np.ndarray (N, 17, 3)
+            track_ids: None (TensorRT pose export has no tracker)
         """
+
+        # --------------------------------------------------
+        # 1. Preprocess (YOLO style)
+        # --------------------------------------------------
+        img = input_array
+
+        # Resize to 640x640 (engine expects this)
+        img = cv2.resize(img, (640, 640))
+
+        # BGR -> RGB
+        img = img[:, :, ::-1]
+
+        # Normalize 0-1
+        img = img.astype(np.float32) / 255.0
+
+        # HWC -> CHW
+        img = np.transpose(img, (2, 0, 1))
+
+        # Add batch dimension
+        img = np.expand_dims(img, axis=0)
+
+        # --------------------------------------------------
+        # 2. Prepare input
+        # --------------------------------------------------
         in_name = self.input_names[0]
         in_shape = tuple(self.context.get_tensor_shape(in_name))
         in_dtype = self._np_dtype(self.engine.get_tensor_dtype(in_name))
 
-        # Make contiguous + correct dtype
-        x = np.ascontiguousarray(input_array, dtype=in_dtype)
+        x = np.ascontiguousarray(img, dtype=in_dtype)
 
         if x.size != self._volume(in_shape):
-            raise ValueError(f"Input size mismatch. Expected {in_shape} ({self._volume(in_shape)} elems) got {x.shape} ({x.size} elems)")
+            raise ValueError(
+                f"Input size mismatch. Expected {in_shape} "
+                f"({self._volume(in_shape)} elems) got {x.shape} ({x.size} elems)"
+            )
 
-        # Copy H->D
         np.copyto(self.host[in_name], x.ravel())
         cuda.memcpy_htod_async(self.device[in_name], self.host[in_name], self.stream)
 
-        # Execute
+        # --------------------------------------------------
+        # 3. Execute
+        # --------------------------------------------------
         ok = self.context.execute_async_v3(self.stream.handle)
         if not ok:
             raise RuntimeError("TensorRT execute_async_v3 failed")
 
-        # Copy D->H outputs
+        # --------------------------------------------------
+        # 4. Copy outputs
+        # --------------------------------------------------
         outputs = {}
         for out_name in self.output_names:
             out_shape = tuple(self.context.get_tensor_shape(out_name))
             out_dtype = self._np_dtype(self.engine.get_tensor_dtype(out_name))
 
-            cuda.memcpy_dtoh_async(self.host[out_name], self.device[out_name], self.stream)
+            cuda.memcpy_dtoh_async(
+                self.host[out_name],
+                self.device[out_name],
+                self.stream
+            )
 
-            outputs[out_name] = (np.array(self.host[out_name], dtype=out_dtype)
-                                 .reshape(out_shape)
-                                 .copy())
+            outputs[out_name] = (
+                np.array(self.host[out_name], dtype=out_dtype)
+                .reshape(out_shape)
+                .copy()
+            )
 
         self.stream.synchronize()
-        return outputs
+
+        # --------------------------------------------------
+        # 5. YOLO Pose Postprocess (simple version)
+        # --------------------------------------------------
+        # For YOLOv8 pose export:
+        # output shape usually: (1, num_detections, 56)
+        # 56 = 4 box + 1 conf + 1 cls + (17*3 keypoints)
+
+        output = outputs[self.output_names[0]][0]
+
+        if output.ndim == 1:
+            return np.empty((0, 17, 3)), None
+
+        persons = []
+        conf_threshold = 0.3
+
+        for det in output:
+            conf = det[4]
+            if conf < conf_threshold:
+                continue
+
+            kpts = det[6:].reshape(17, 3)
+            persons.append(kpts)
+
+        if not persons:
+            return np.empty((0, 17, 3)), None
+
+        keypoints_data = np.array(persons)
+
+        return keypoints_data, None
