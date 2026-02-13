@@ -123,35 +123,59 @@ class TensorRTBackend:
 
     def infer(self, input_array: np.ndarray):
         """
-        Expects BGR image (H,W,3)
+        Expects BGR image (H,W,3) as numpy array.
         Returns:
             keypoints_data: np.ndarray (N, 17, 3)
             track_ids: None (TensorRT pose export has no tracker)
         """
 
-        # --------------------------------------------------
-        # 1. Preprocess (YOLO style)
-        # --------------------------------------------------
-        img = input_array
+        # -----------------------------
+        # 0) Validate frame
+        # -----------------------------
+        if input_array is None:
+            logger.warning("TensorRTBackend.infer() received None frame")
+            return np.empty((0, 17, 3), dtype=np.float32), None
 
-        # Resize to 640x640 (engine expects this)
-        img = cv2.resize(img, (640, 640))
+        if not isinstance(input_array, np.ndarray):
+            logger.warning(f"TensorRTBackend.infer() received non-numpy frame: {type(input_array)}")
+            return np.empty((0, 17, 3), dtype=np.float32), None
+
+        if input_array.ndim != 3 or input_array.shape[2] != 3:
+            logger.warning(f"TensorRTBackend.infer() invalid frame shape: {input_array.shape}")
+            return np.empty((0, 17, 3), dtype=np.float32), None
+
+        h, w, c = input_array.shape
+        if h <= 0 or w <= 0:
+            logger.warning(f"TensorRTBackend.infer() empty frame: {input_array.shape}")
+            return np.empty((0, 17, 3), dtype=np.float32), None
+
+        # GI appsink sometimes returns readonly / non-contiguous memory
+        # Make it safe for OpenCV ops
+        img = np.ascontiguousarray(input_array)
+        if not img.flags.writeable:
+            img = img.copy()
+
+        # -----------------------------
+        # 1) Preprocess (YOLO TRT)
+        # -----------------------------
+        # Resize to model input
+        img = cv2.resize(img, (640, 640), interpolation=cv2.INTER_LINEAR)
 
         # BGR -> RGB
         img = img[:, :, ::-1]
 
-        # Normalize 0-1
+        # Normalize
         img = img.astype(np.float32) / 255.0
 
         # HWC -> CHW
         img = np.transpose(img, (2, 0, 1))
 
-        # Add batch dimension
+        # Add batch
         img = np.expand_dims(img, axis=0)
 
-        # --------------------------------------------------
-        # 2. Prepare input
-        # --------------------------------------------------
+        # -----------------------------
+        # 2) Prepare input buffers
+        # -----------------------------
         in_name = self.input_names[0]
         in_shape = tuple(self.context.get_tensor_shape(in_name))
         in_dtype = self._np_dtype(self.engine.get_tensor_dtype(in_name))
@@ -167,26 +191,22 @@ class TensorRTBackend:
         np.copyto(self.host[in_name], x.ravel())
         cuda.memcpy_htod_async(self.device[in_name], self.host[in_name], self.stream)
 
-        # --------------------------------------------------
-        # 3. Execute
-        # --------------------------------------------------
+        # -----------------------------
+        # 3) Execute
+        # -----------------------------
         ok = self.context.execute_async_v3(self.stream.handle)
         if not ok:
             raise RuntimeError("TensorRT execute_async_v3 failed")
 
-        # --------------------------------------------------
-        # 4. Copy outputs
-        # --------------------------------------------------
+        # -----------------------------
+        # 4) Copy outputs
+        # -----------------------------
         outputs = {}
         for out_name in self.output_names:
             out_shape = tuple(self.context.get_tensor_shape(out_name))
             out_dtype = self._np_dtype(self.engine.get_tensor_dtype(out_name))
 
-            cuda.memcpy_dtoh_async(
-                self.host[out_name],
-                self.device[out_name],
-                self.stream
-            )
+            cuda.memcpy_dtoh_async(self.host[out_name], self.device[out_name], self.stream)
 
             outputs[out_name] = (
                 np.array(self.host[out_name], dtype=out_dtype)
@@ -196,32 +216,40 @@ class TensorRTBackend:
 
         self.stream.synchronize()
 
-        # --------------------------------------------------
-        # 5. YOLO Pose Postprocess (simple version)
-        # --------------------------------------------------
-        # For YOLOv8 pose export:
-        # output shape usually: (1, num_detections, 56)
-        # 56 = 4 box + 1 conf + 1 cls + (17*3 keypoints)
+        # -----------------------------
+        # 5) Postprocess (simple)
+        # -----------------------------
+        output = outputs[self.output_names[0]]
 
-        output = outputs[self.output_names[0]][0]
+        # Handle unexpected shapes safely
+        if output is None or output.size == 0:
+            return np.empty((0, 17, 3), dtype=np.float32), None
 
-        if output.ndim == 1:
-            return np.empty((0, 17, 3)), None
+        # typically (1, N, 56)
+        if output.ndim == 3:
+            dets = output[0]
+        elif output.ndim == 2:
+            dets = output
+        else:
+            logger.warning(f"Unexpected TRT output shape: {output.shape}")
+            return np.empty((0, 17, 3), dtype=np.float32), None
 
         persons = []
-        conf_threshold = 0.3
+        conf_threshold = 0.30
 
-        for det in output:
-            conf = det[4]
+        for det in dets:
+            # Guard: det length must be >= 6 + 17*3
+            if det.shape[0] < (6 + 17 * 3):
+                continue
+
+            conf = float(det[4])
             if conf < conf_threshold:
                 continue
 
-            kpts = det[6:].reshape(17, 3)
-            persons.append(kpts)
+            kpts = det[6:6 + 17 * 3].reshape(17, 3)
+            persons.append(kpts.astype(np.float32))
 
         if not persons:
-            return np.empty((0, 17, 3)), None
+            return np.empty((0, 17, 3), dtype=np.float32), None
 
-        keypoints_data = np.array(persons)
-
-        return keypoints_data, None
+        return np.stack(persons, axis=0), None
