@@ -129,7 +129,6 @@ class TensorRTBackend:
             track_ids: None (TensorRT pose export has no tracker)
         """
 
-        logger.info("Running TRT inference...")
         # -----------------------------
         # 0) Validate frame
         # -----------------------------
