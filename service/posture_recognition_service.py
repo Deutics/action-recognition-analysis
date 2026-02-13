@@ -87,11 +87,13 @@ class PoseRecognition:
 
         # Mac -> always CPU Torch
         if platform.system() == "Darwin":
+            self._backend_name = "torch"
             logger.info("Using Torch backend (Mac)")
             return TorchBackend(model_path)
 
         # Jetson -> prefer TensorRT
         if self._is_jetson() and TRT_AVAILABLE:
+            self._backend_name = "tensorrt"
             engine_path = "yolo26n-pose_fp16.engine"
             if os.path.exists(engine_path):
                 logger.info("Using TensorRT backend (Jetson)")
@@ -179,7 +181,7 @@ class PoseRecognition:
 
 
                 # Generating notifications for testing on jetson
-                if self.frame_index % 100 == 0:
+                if self.frame_index % 10000 == 0:
                     await self.notification_handler.notify_fall(
                         person_id="123456",
                         frame=frame.copy(),
@@ -210,66 +212,74 @@ class PoseRecognition:
 
         persons = []
 
-        # ----------------------------------
-        # TensorRT preprocessing
-        # ----------------------------------
-        if hasattr(self.backend, "infer"):  # TRT backend
+        try:
+            # ----------------------------------------
+            # 1) TensorRT Backend (Jetson)
+            # ----------------------------------------
+            if self.backend_name == "tensorrt":
 
-            img = cv2.resize(frame, (640, 640))
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = img.astype(np.float32) / 255.0
+                # Send RAW frame only (H,W,3)
+                keypoints_data, track_ids = self.backend.infer(frame)
 
-            img = np.transpose(img, (2, 0, 1))  # HWC → CHW
-            img = np.expand_dims(img, axis=0)  # add batch
+                if keypoints_data is None or len(keypoints_data) == 0:
+                    return persons
 
-            keypoints_data, track_ids = self.backend.infer(img)
+            # ----------------------------------------
+            # 2) PyTorch Backend (Mac / CPU)
+            # ----------------------------------------
+            else:
+                results = self.model.track(
+                    frame,
+                    conf=self.confidence_threshold,
+                    persist=True,
+                    verbose=False
+                )
 
-        else:
-            # PyTorch / YOLO path
-            results = self.backend.track(
-                frame,
-                conf=self.confidence_threshold,
-                persist=True,
-                verbose=False
-            )
+                if not results:
+                    return persons
 
-            if not results:
-                return persons
+                result = results[0]
+                if result.keypoints is None:
+                    return persons
 
-            result = results[0]
-            if result.keypoints is None:
-                return persons
+                keypoints_data = result.keypoints.data.cpu().numpy()
 
-            keypoints_data = result.keypoints.data.cpu().numpy()
+                track_ids = []
+                if result.boxes is not None and result.boxes.id is not None:
+                    track_ids = result.boxes.id.cpu().numpy().astype(int)
 
-            track_ids = []
-            if result.boxes is not None and result.boxes.id is not None:
-                track_ids = result.boxes.id.cpu().numpy().astype(int)
+            # ----------------------------------------
+            # 3) Post-processing (common)
+            # ----------------------------------------
+            for idx, person_keypoints in enumerate(keypoints_data):
+                person_id = (
+                    track_ids[idx] if track_ids is not None and idx < len(track_ids)
+                    else idx
+                )
 
-        # ----------------------------------
-        # Post-process shared logic
-        # ----------------------------------
+                kpt_coords = person_keypoints[:, :2]
+                kpt_conf = person_keypoints[:, 2].tolist()
 
-        for idx, person_keypoints in enumerate(keypoints_data):
-            person_id = track_ids[idx] if idx < len(track_ids) else idx
+                kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
 
-            kpt_coords = person_keypoints[:, :2]
-            kpt_conf = person_keypoints[:, 2].tolist()
+                self.classifier.set_frame_dimensions(frame.shape[0], frame.shape[1])
+                label, confidence = self.classifier.classify(
+                    kpts,
+                    frame.shape[0]
+                )
 
-            kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
+                persons.append({
+                    "id": person_id,
+                    "label": label,
+                    "confidence": float(confidence),
+                    "keypoints": kpts
+                })
 
-            self.classifier.set_frame_dimensions(frame.shape[0], frame.shape[1])
-            label, confidence = self.classifier.classify(kpts, frame.shape[0])
-            confidence = float(confidence)
+            return persons
 
-            persons.append({
-                "id": person_id,
-                "label": label,
-                "confidence": confidence,
-                "keypoints": kpts
-            })
-
-        return persons
+        except Exception as e:
+            logger.error(f"Inference error: {e}", exc_info=True)
+            return []
 
     # ==========================================================
     # Cleanup
