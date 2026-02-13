@@ -179,6 +179,8 @@ class PoseRecognition:
                             confidence=p["confidence"]
                         )
 
+                if self.frame_index % 100 == 0:
+                    logger.info(f"Frame count: {self.frame_index}")
 
                 # Generating notifications for testing on jetson
                 if self.frame_index % 10000 == 0:
