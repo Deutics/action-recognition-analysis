@@ -183,7 +183,7 @@ class PoseRecognition:
                     logger.info(f"Frame count: {self.frame_index}")
 
                 # Generating notifications for testing on jetson
-                if (self.frame_index + 1) % 10000 == 0:
+                if (self.frame_index + 1) % 1000 == 0:
                     await self.notification_handler.notify_fall(
                         person_id="123456",
                         frame=frame.copy(),
