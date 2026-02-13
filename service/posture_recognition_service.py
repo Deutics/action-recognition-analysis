@@ -1,19 +1,20 @@
 """
-Posture Recognition Service - LOW LATENCY VERSION
-Zero-buffer, latest-frame-only processing
+Posture Recognition Service
+Cross-platform:
+- Mac -> Torch CPU
+- Jetson -> TensorRT (if available) else Torch CPU
 """
 
 import cv2
+import numpy as np
+import asyncio
+import time
+import platform
+import os
+
 from typing import Optional
 
-from scipy.signal import ellip
-from ultralytics import YOLO
-import numpy as np
-import torch
-import time
-import asyncio
 from config.constants import ENABLE_UI
-
 from config.posture_config import PostureConfig
 from preprocessing.keypoint_extractor import KeypointExtractor
 from core.classifier import PostureClassifier
@@ -23,15 +24,20 @@ from tracking.person_tracker import PersonTracker
 from notification.notification_handler import NotificationHandler
 from utils.logger import get_logger
 
+# Backends
+from inference.torch_backend import TorchBackend
+
+try:
+    from inference.tensorrt_backend import TensorRTBackend
+    TRT_AVAILABLE = True
+except Exception:
+    TRT_AVAILABLE = False
+
 
 logger = get_logger(__name__)
 
 
 class PoseRecognition:
-    """
-    Low-latency posture recognition service.
-    Designed for real-time display with minimum delay.
-    """
 
     def __init__(self,
                  video_source: str,
@@ -46,17 +52,13 @@ class PoseRecognition:
         self.confidence_threshold = confidence_threshold
         self.infer_every_n_frames = max(1, infer_every_n_frames)
 
-        self.device = "cpu"
-        # self.device = "mps" if torch.mps.is_available() else self.device
-        self.device = "cuda" if torch.cuda.is_available() else self.device
-
-        logger.info(f"Using device: {self.device}")
-
         self.config = config or PostureConfig()
 
-        logger.info(f"Loading YOLO model: {model_path}")
-        self.model = YOLO(model_path)
-        self.model.to(self.device)
+        # --------------------------------------------------
+        # Backend Selection
+        # --------------------------------------------------
+
+        self.backend = self._select_backend(model_path)
 
         # Core components (UNCHANGED)
         self.keypoint_extractor = KeypointExtractor(self.config)
@@ -72,43 +74,73 @@ class PoseRecognition:
         self.frame_index = 0
         self.last_persons = []
 
-        logger.info(f"Low-latency service initialized for source: {source_id}")
+        logger.info(f"Service initialized for source: {source_id}")
 
-    # ------------------------------------------------------------------ #
+    # ==========================================================
+    # Backend selection
+    # ==========================================================
+
+    def _is_jetson(self):
+        return os.path.exists("/etc/nv_tegra_release")
+
+    def _select_backend(self, model_path):
+
+        # Mac -> always CPU Torch
+        if platform.system() == "Darwin":
+            logger.info("Using Torch backend (Mac)")
+            return TorchBackend(model_path)
+
+        # Jetson -> prefer TensorRT
+        if self._is_jetson() and TRT_AVAILABLE:
+            engine_path = "yolo26n-pose_fp16.engine"
+            if os.path.exists(engine_path):
+                logger.info("Using TensorRT backend (Jetson)")
+                return TensorRTBackend(engine_path)
+            else:
+                logger.warning("TensorRT engine not found, falling back to Torch CPU")
+
+        # Fallback
+        logger.info("Using Torch CPU backend (fallback)")
+        return TorchBackend(model_path)
+
+    # ==========================================================
+    # Main loop
+    # ==========================================================
 
     async def run(self):
-        """Main low-latency loop"""
 
         try:
-            logger.info(f"Starting posture detection on source: {self.video_source}")
+            logger.info(f"Starting posture detection on: {self.video_source}")
             self.stream_handler.start_stream()
-
-            # cap = self.stream_handler.capture
-            # width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            # height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            # fps = cap.get(cv2.CAP_PROP_FPS)
 
             await self.notification_handler.start()
 
-            # logger.info(f"Stream opened - FPS: {fps}, Resolution: {width}x{height}")
-
             while True:
-                frame, motion_detected = await asyncio.to_thread(self.stream_handler.read_frame)
+
+                frame, motion_detected = await asyncio.to_thread(
+                    self.stream_handler.read_frame
+                )
+
                 if frame is None:
-                    logger.warning("End of stream reached")
+                    logger.warning("Stream ended")
                     break
 
-                # ---------------- INFERENCE CONTROL ---------------- #
+                # IMPORTANT: GStreamer frames can be readonly
+                frame = frame.copy()
+
                 run_inference = (
                     motion_detected and
                     (self.frame_index % self.infer_every_n_frames == 0)
                 )
 
                 if run_inference:
-                    # self.last_persons = self._infer_and_classify(frame)
-                    self.last_persons = await asyncio.to_thread(self._infer_and_classify, frame)
+                    self.last_persons = await asyncio.to_thread(
+                        self._infer_and_classify, frame
+                    )
 
-                # ---------------- FALLING TRACKING ---------------- #
+                # -------------------------
+                # Falling tracking
+                # -------------------------
                 active_ids = set()
                 falling_ids = set()
 
@@ -119,8 +151,11 @@ class PoseRecognition:
 
                 self.person_tracker.cleanup(active_ids)
 
-                # ---------------- ANNOTATION ---------------- #
+                # -------------------------
+                # Annotation
+                # -------------------------
                 for p in self.last_persons:
+
                     label = p["label"]
                     if p["id"] in falling_ids:
                         label = "Falling"
@@ -134,19 +169,18 @@ class PoseRecognition:
                     )
 
                     if p["id"] in falling_ids:
-                        await self.notification_handler.notify_fall(person_id=p["id"],
-                                                                    frame=frame.copy(),
-                                                                    source_id=self.source_id,
-                                                                    confidence=p["confidence"])
+                        await self.notification_handler.notify_fall(
+                            person_id=p["id"],
+                            frame=frame.copy(),
+                            source_id=self.source_id,
+                            confidence=p["confidence"]
+                        )
 
                 if ENABLE_UI == "1":
-                    cv2.imshow(f"Posture Detection - Source {self.source_id}", frame)
-
+                    cv2.imshow(f"Posture Detection - {self.source_id}", frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logger.info("Quit requested by user")
                         break
 
-                # let other tasks (notification worker) run
                 await asyncio.sleep(0)
 
                 self.frame_index = (self.frame_index + 1) % 1_000_000
@@ -157,36 +191,23 @@ class PoseRecognition:
         finally:
             await self._cleanup()
 
-    # ------------------------------------------------------------------ #
+    # ==========================================================
+    # Inference + Classification
+    # ==========================================================
 
     def _infer_and_classify(self, frame: np.ndarray):
-        """Run YOLO pose + posture classification on a single frame"""
 
         persons = []
 
-        results = self.model.track(
-            frame,
-            conf=self.confidence_threshold,
-            persist=True,
-            verbose=False
-        )
+        keypoints_data, track_ids = self.backend.infer(frame)
 
-        if not results:
+        if keypoints_data is None:
             return persons
 
-        result = results[0]
-        if result.keypoints is None:
-            return persons
-
-        keypoints_data = result.keypoints.data.cpu().numpy()
-
-        track_ids = []
-        if result.boxes is not None and result.boxes.id is not None:
-            track_ids = result.boxes.id.cpu().numpy().astype(int)
-
-        frame_h = frame.shape[0]
+        frame_h, frame_w = frame.shape[:2]
 
         for idx, person_keypoints in enumerate(keypoints_data):
+
             person_id = track_ids[idx] if idx < len(track_ids) else idx
 
             kpt_coords = person_keypoints[:, :2]
@@ -194,20 +215,21 @@ class PoseRecognition:
 
             kpts = self.keypoint_extractor.extract(kpt_coords, kpt_conf)
 
-            self.classifier.set_frame_dimensions(frame.shape[0], frame.shape[1])
-            label, confidence = self.classifier.classify(kpts, frame.shape[0])
-            # label, confidence = self.classifier.classify(kpts, frame_h)
+            self.classifier.set_frame_dimensions(frame_h, frame_w)
+            label, confidence = self.classifier.classify(kpts, frame_h)
 
             persons.append({
-                "id": person_id,
+                "id": int(person_id),
                 "label": label,
-                "confidence": confidence,
+                "confidence": float(confidence),
                 "keypoints": kpts
             })
 
         return persons
 
-    # ------------------------------------------------------------------ #
+    # ==========================================================
+    # Cleanup
+    # ==========================================================
 
     async def _cleanup(self):
         logger.info("Releasing resources...")
