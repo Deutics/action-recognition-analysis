@@ -216,7 +216,7 @@ class PoseRecognition:
             # ----------------------------------------
             # 1) TensorRT Backend (Jetson)
             # ----------------------------------------
-            if self.backend_name == "tensorrt":
+            if self._backend_name == "tensorrt":
 
                 # Send RAW frame only (H,W,3)
                 keypoints_data, track_ids = self.backend.infer(frame)
