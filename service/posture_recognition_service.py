@@ -255,6 +255,7 @@ class PoseRecognition:
                         break
 
                 if (self.frame_index + 1) % 100 == 0:
+                    frame = self.frame_annotator.draw_region_of_interest(frame, zone_poly)
                     await self.notification_handler.notify_fall(
                         person_id=1,
                         frame=frame.copy(),
