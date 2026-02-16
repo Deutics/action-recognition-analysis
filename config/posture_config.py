@@ -26,19 +26,19 @@ class PostureConfig:
     
     # Horizontal orientation threshold (for lying detection)
     horizontal_deviation_threshold: float = 30.0
-    
+
     # Confidence thresholds
-    min_keypoint_confidence: float = 0.3
-    lying_duration_threshold: float = 0.2
+    min_keypoint_confidence: float = 0.25
+    lying_duration_threshold: float = 0.08
 
     # ---------------- NEW LYING FILTERS ----------------
-    lying_min_points: int = 6  # minimum visible body points
-    lying_torso_dev_horiz_max: float = 22.0  # torso must be horizontal-ish
-    lying_body_axis_dev_horiz_max: float = 25.0  # shoulder→ankle must be horizontal-ish
-    lying_aspect_ratio_min: float = 1.25  # body must be wider than tall
-    lying_height_ratio_max: float = 0.40  # vertical span must be small
-    lying_floor_contact_min: float = 0.78  # body must be near bottom of frame
-    lying_gravity_proj_ratio_max: float = 0.33  # gravity vector mostly horizontal
+    lying_min_points: int = 4  # was 6
+    lying_torso_dev_horiz_max: float = 35.0  # was 22
+    lying_body_axis_dev_horiz_max: float = 40.0  # was 25
+    lying_aspect_ratio_min: float = 0.95  # was 1.25
+    lying_height_ratio_max: float = 0.60  # was 0.40
+    lying_floor_contact_min: float = 0.55  # was 0.78
+    lying_gravity_proj_ratio_max: float = 0.55  # was 0.33
 
 
 # Posture labels as string constants

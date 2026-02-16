@@ -212,7 +212,7 @@ class PoseRecognition:
                 # Annotation + notification with zone filter
                 for p in self.last_persons:
                     label = p["label"]
-                    if p["id"] in falling_ids:
+                    if (p["id"] in falling_ids) or (p["label"] == "Lying"):
                         label = "Falling"
 
                     frame = self.frame_annotator.annotate_frame(
