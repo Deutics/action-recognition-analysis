@@ -472,8 +472,8 @@ class FallDetectionAlerts:
                 # Send SMS (Twilio is blocking -> thread)
                 sms_success = 0
                 if self.client is not None and self.from_phone:
-                    # sms_success = await asyncio.to_thread(self._send_sms_blocking, sms_body)
-                    pass
+                    sms_success = await asyncio.to_thread(self._send_sms_blocking, sms_body)
+                    # pass
 
                 if sms_success > 0:
                     LOGGER.info(f"✅ SMS sent to {sms_success}/{len(self.to_phones)} recipients")

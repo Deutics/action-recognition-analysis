@@ -254,14 +254,14 @@ class PoseRecognition:
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
 
-                if (self.frame_index + 1) % 100 == 0:
-                    frame = self.frame_annotator.draw_region_of_interest(frame, zone_poly)
-                    await self.notification_handler.notify_fall(
-                        person_id=1,
-                        frame=frame.copy(),
-                        source_id=self.source_id,
-                        confidence=1
-                    )
+                # if (self.frame_index + 1) % 100 == 0:
+                #     frame = self.frame_annotator.draw_region_of_interest(frame, zone_poly)
+                #     await self.notification_handler.notify_fall(
+                #         person_id=1,
+                #         frame=frame.copy(),
+                #         source_id=self.source_id,
+                #         confidence=1
+                #     )
 
                 await asyncio.sleep(0)
                 self.frame_index = (self.frame_index + 1) % 1_000_000
