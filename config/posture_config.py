@@ -29,7 +29,7 @@ class PostureConfig:
 
     # Confidence thresholds
     min_keypoint_confidence: float = 0.25
-    lying_duration_threshold: float = 0.08
+    lying_duration_threshold: float = 0.01
 
     # ---------------- NEW LYING FILTERS ----------------
     lying_min_points: int = 4  # was 6
