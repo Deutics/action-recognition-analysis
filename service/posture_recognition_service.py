@@ -237,7 +237,7 @@ class PoseRecognition:
                         else:
                             cx, cy = center
                             if self._point_in_zone(cx, cy, zone_poly):
-                                frame = self.frame_annotator.draw_region_of_interest(frame, zone_poly)
+                                # frame = self.frame_annotator.draw_region_of_interest(frame, zone_poly)
                                 await self.notification_handler.notify_fall(
                                     person_id=p["id"],
                                     frame=frame.copy(),
