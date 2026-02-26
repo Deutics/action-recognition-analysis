@@ -154,7 +154,7 @@ class PostureClassifier:
                 votes += 1
 
             # ✅ Tune this line if needed (3 = very loose, 4 = balanced, 5 = strict)
-            if votes >= 4:
+            if votes >= 5:
                 conf = min(0.98, 0.70 + 0.06 * votes)
                 return (PostureLabel.LYING, conf)
 
