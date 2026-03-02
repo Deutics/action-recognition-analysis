@@ -32,7 +32,7 @@ class PostureConfig:
     lying_duration_threshold: float = 0.02
 
     # ---------------- NEW LYING FILTERS ----------------
-    lying_min_points: int = 4  # was 6
+    lying_min_points: int = 6  # was 4
     lying_torso_dev_horiz_max: float = 35.0  # was 22
     lying_body_axis_dev_horiz_max: float = 40.0  # was 25
     lying_aspect_ratio_min: float = 0.95  # was 1.25
