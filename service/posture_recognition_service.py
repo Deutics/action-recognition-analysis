@@ -28,7 +28,10 @@ from notification.notification_handler import NotificationHandler
 from utils.logger import get_logger
 
 from inference.torch_backend import TorchBackend
-from inference.human_detector import HumanDetector
+try:
+    from inference.human_detector import HumanDetector
+except Exception:
+    HumanDetector = None
 
 try:
     from inference.tensorrt_backend import TensorRTBackend
@@ -145,7 +148,9 @@ class PoseRecognition:
         return TorchBackend(model_path, use_tracking=use_tracking), "torch"
 
     @classmethod
-    def create_human_detector(cls, preferred_model: str = "yolo26m.pt") -> HumanDetector:
+    def create_human_detector(cls, preferred_model: str = "yolo26m.pt"):
+        if HumanDetector is None:
+            raise RuntimeError("Human detector module not available (inference/human_detector.py missing)")
         candidate_models = []
 
         if cls._is_jetson():
