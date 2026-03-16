@@ -20,8 +20,13 @@
     "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
   },
   {
-    "source_id":  "Local Video",
+    "source_id":  "Local Video 1",
     "source": "temppp.mp4",
+    "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
+  },
+  {
+    "source_id":  "Local Video 2",
+    "source": "video.mp4",
     "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
   }
 ]

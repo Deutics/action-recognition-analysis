@@ -13,9 +13,10 @@ class TorchBackend:
     Torch CPU backend (Mac / fallback)
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, use_tracking: bool = True):
         logger.info(f"Loading YOLO model (Torch CPU): {model_path}")
         self.model = YOLO(model_path)
+        self.use_tracking = use_tracking
         device = "cpu"
         device = "cuda" if torch.cuda.is_available() else device
         device = "mps" if torch.mps.is_available() else device
@@ -29,12 +30,19 @@ class TorchBackend:
             track_ids (list[int])
         """
 
-        results = self.model.track(
-            frame,
-            conf=0.5,
-            persist=True,
-            verbose=False
-        )
+        if self.use_tracking:
+            results = self.model.track(
+                frame,
+                conf=0.5,
+                persist=True,
+                verbose=False
+            )
+        else:
+            results = self.model(
+                frame,
+                conf=0.5,
+                verbose=False
+            )
 
         if not results:
             return None, None

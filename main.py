@@ -1,12 +1,13 @@
 """
 Main Entry Point for Posture Detection Service
-Handles multiprocess stream processing
+Single-process architecture:
+- Loads one shared inference backend
+- Processes all stream frames sequentially (round-robin)
+- Keeps fall tracking + notifications independent per stream
 """
 
 import asyncio
-import multiprocessing as mp
 import json
-from multiprocessing import Process
 from typing import List, Dict, Any
 from pathlib import Path
 import ast
@@ -36,80 +37,82 @@ def load_streams_config(path: str) -> List[Dict[str, Any]]:
     return streams
 
 
-async def run_posture_service(source: str, source_id: str, normalized_zone_vertices=None):
-    """
-    Run posture detection service for a single stream
-    """
-    service = PoseRecognition(
-        video_source=source,
-        source_id=source_id,
+def parse_zone(stream_entry: Dict[str, Any]):
+    zone = stream_entry.get("normalized_zone_vertices")
+    if not zone:
+        return None
+
+    if isinstance(zone, str):
+        return ast.literal_eval(zone)
+
+    return zone
+
+
+async def run_all_streams(streams: List[Dict[str, Any]]):
+    shared_backend, backend_name = PoseRecognition.create_backend(
         model_path="yolo26n-pose.pt",
-        config=PostureConfig(),
-        confidence_threshold=0.5,
-        normalized_zone_vertices=normalized_zone_vertices
+        use_tracking=False,
     )
-    await service.run()
-
-
-def process_entry(source: str, source_id: str, normalized_zone_vertices=None):
-    """
-    Process entrypoint must be SYNC.
-    It creates/runs the asyncio event loop inside the child process.
-    """
+    shared_human_detector = None
     try:
-        asyncio.run(run_posture_service(source, source_id, normalized_zone_vertices))
-    except KeyboardInterrupt:
-        pass
+        shared_human_detector = PoseRecognition.create_human_detector(preferred_model="yolo26m.pt")
     except Exception as e:
-        logger.exception(f"Process error for source {source_id}: {e}")
+        logger.warning(f"Shared human detector unavailable; fall alerts will be gated off: {e}")
+    logger.info(f"Shared backend loaded once: {backend_name}")
+
+    services: List[PoseRecognition] = []
+    for s in streams:
+        service = PoseRecognition(
+            video_source=s["source"],
+            source_id=s["source_id"],
+            model_path="yolo26n-pose.pt",
+            config=PostureConfig(),
+            confidence_threshold=0.5,
+            normalized_zone_vertices=parse_zone(s),
+            backend=shared_backend,
+            backend_name=backend_name,
+            use_backend_track_ids=False,
+            reconnect_interval_sec=5.0,
+            person_detector=shared_human_detector,
+            person_box_overlap_threshold=0.6,
+        )
+        services.append(service)
+
+    try:
+        for service in services:
+            await service.start()
+
+        logger.info(f"Started {len(services)} streams with one shared inference backend")
+
+        while True:
+            should_stop = False
+            for service in services:
+                keep_running = await service.process_once()
+                if not keep_running:
+                    should_stop = True
+                    break
+
+            if should_stop:
+                logger.info("Stop signal received from UI, shutting down all streams")
+                break
+
+            # Small scheduler pacing prevents busy-spin CPU saturation over long runtimes.
+            await asyncio.sleep(0.002)
+
+    finally:
+        for service in services:
+            await service.stop()
 
 
 def main():
-    # IMPORTANT on macOS: spawn prevents many weird issues with async + ML libs
-    try:
-        mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        # already set
-        pass
-
     streams = load_streams_config("stream_sources.json")
-    streams = streams[4:5]
-
-    logger.info(f"Starting {len(streams)} posture detection service(s)")
-
-    processes = []
-    for s in streams:
-        zone = None
-        if "normalized_zone_vertices" in s and s["normalized_zone_vertices"]:
-            # your JSON stores it as a string like "[(0.1,0.2), ...]"
-            zone = ast.literal_eval(s["normalized_zone_vertices"])
-
-        logger.info(f"Starting process for {s['source_id']}")
-        p = Process(
-            target=process_entry,
-            args=(s["source"], s["source_id"], zone),
-            name=f"PoseService-{s['source_id']}",
-            daemon=False
-        )
-        p.start()
-        processes.append(p)
-
-    logger.info(f"All {len(processes)} processes started")
+    # streams = streams[-3:]
+    logger.info(f"Starting {len(streams)} stream(s) in single-engine mode")
 
     try:
-        for p in processes:
-            p.join()
+        asyncio.run(run_all_streams(streams))
     except KeyboardInterrupt:
-        logger.info("Interrupt received, terminating all processes...")
-        for p in processes:
-            if p.is_alive():
-                p.terminate()
-        for p in processes:
-            p.join(timeout=5)
-        for p in processes:
-            if p.is_alive():
-                p.kill()
-        logger.info("All processes terminated")
+        logger.info("Interrupt received, shutting down...")
 
 
 if __name__ == "__main__":
