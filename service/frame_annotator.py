@@ -77,10 +77,10 @@ class FrameAnnotator:
         # Fill polygon in RED (BGR)
         cv2.fillPoly(overlay, [vertices], color=(0, 0, 255))
         # Alpha blend
-        alpha = 0.20  # 0 = transparent, 1 = solid
+        alpha = 0.10  # 0 = transparent, 1 = solid
         frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
         # Draw polygon border (green)
-        cv2.polylines(frame, [vertices], isClosed=True, color=(0, 100, 255), thickness=2)
+        cv2.polylines(frame, [vertices], isClosed=True, color=(0, 100, 255), thickness=1)
 
         return frame
     

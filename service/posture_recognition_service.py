@@ -237,7 +237,8 @@ class PoseRecognition:
 
         should_continue = await self._postprocess_and_notify(frame)
         self._last_processed_frame_seq = current_seq
-        self._update_fps()
+        if ENABLE_UI:
+            self._update_fps()
 
         await asyncio.sleep(0)
         self.frame_index = (self.frame_index + 1) % 1_000_000
