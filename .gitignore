@@ -36,6 +36,7 @@ Thumbs.db
 *.log
 *.tmp
 *.env
+*.json
 # Jupyter Notebook checkpoints (if any)
 .ipynb_checkpoints/
 

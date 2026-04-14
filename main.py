@@ -15,6 +15,7 @@ import ast
 from config.posture_config import PostureConfig
 from service.posture_recognition_service import PoseRecognition
 from utils.logger import get_logger
+from config.constants import STREAM_SOURCES_FILE_PATH
 
 
 logger = get_logger(__name__)
@@ -105,8 +106,7 @@ async def run_all_streams(streams: List[Dict[str, Any]]):
 
 
 def main():
-    streams = load_streams_config("stream_sources.json")
-    # streams = streams[-3:]
+    streams = load_streams_config(STREAM_SOURCES_FILE_PATH)
     logger.info(f"Starting {len(streams)} stream(s) in single-engine mode")
 
     try:
