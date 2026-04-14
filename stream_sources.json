@@ -18,25 +18,5 @@
     "source_id":  "CPW_South_Cam",
     "source": "rtsp://192.168.1.200:554/chID=7&streamType=sub",
     "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
-  },
-  {
-    "source_id":  "Local Video 1",
-    "source": "temppp.mp4",
-    "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
-  },
-  {
-    "source_id":  "Local Video 2",
-    "source": "vid2.mp4",
-    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
-  },
-  {
-    "source_id":  "Local Video 3",
-    "source": "vid3.mp4",
-    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
-  },
-  {
-    "source_id":  "Local Video 4",
-    "source": "vid4.mp4",
-    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
   }
 ]
