@@ -26,7 +26,17 @@
   },
   {
     "source_id":  "Local Video 2",
-    "source": "video.mp4",
-    "normalized_zone_vertices": "[(0.031, 0.479), (0.153, 0.448), (0.984, 0.998), (0.125, 0.998)]"
+    "source": "vid2.mp4",
+    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
+  },
+  {
+    "source_id":  "Local Video 3",
+    "source": "vid3.mp4",
+    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
+  },
+  {
+    "source_id":  "Local Video 4",
+    "source": "vid4.mp4",
+    "normalized_zone_vertices": "[(0.125, 0.079), (0.859, 0.079), (0.859, 0.746), (0.125, 0.746)]"
   }
 ]
