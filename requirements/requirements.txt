@@ -1,0 +1,65 @@
+# =========================
+# CORE (Jetson Stable)
+# =========================
+numpy==1.26.4
+opencv-python==4.8.1.78
+scipy==1.10.1
+sympy==1.13.1
+
+# =========================
+# TORCH (IMPORTANT ⚠️)
+# =========================
+# NOTE:
+# On Jetson, DO NOT install torch via pip here.
+# Install NVIDIA-provided torch separately.
+# Keep placeholders for compatibility:
+
+torch==2.1.0
+torchvision==0.16.0
+
+# =========================
+# AI / CV
+# =========================
+ultralytics==8.2.0
+ultralytics-thop==2.0.0
+pytorchvideo==0.1.5
+
+# =========================
+# STREAMING / VIDEO
+# =========================
+av==10.0.0
+
+# =========================
+# API / SERVER
+# =========================
+fastapi==0.110.0
+starlette==0.36.3
+uvicorn==0.29.0
+python-multipart==0.0.9
+
+# =========================
+# ASYNC / NETWORK
+# =========================
+aiohttp==3.9.5
+aiofiles==23.2.1
+requests==2.31.0
+
+# =========================
+# DATA / UTILS
+# =========================
+pydantic==2.6.4
+PyYAML==6.0.1
+tqdm==4.66.2
+psutil==5.9.8
+
+# =========================
+# AUTH / MISC
+# =========================
+PyJWT==2.8.0
+python-dotenv==1.0.1
+twilio==9.0.0
+
+# =========================
+# OPTIONAL (safe)
+# =========================
+matplotlib==3.7.5
