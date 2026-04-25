@@ -77,6 +77,71 @@ class TensorRTBackend:
             v *= int(d)
         return int(v)
 
+    def _input_hw(self):
+        in_name = self.input_names[0]
+        in_shape = tuple(self.context.get_tensor_shape(in_name))
+        if len(in_shape) != 4:
+            raise RuntimeError(f"Unexpected TensorRT input shape: {in_shape}")
+        _, _, input_h, input_w = in_shape
+        return int(input_h), int(input_w)
+
+    def _letterbox(self, image: np.ndarray, new_shape: tuple):
+        """
+        Resize with unchanged aspect ratio and symmetric padding.
+        Returns image and transform metadata for reverse mapping.
+        """
+        src_h, src_w = image.shape[:2]
+        dst_h, dst_w = new_shape
+
+        scale = min(dst_w / max(src_w, 1), dst_h / max(src_h, 1))
+        resized_w = max(1, int(round(src_w * scale)))
+        resized_h = max(1, int(round(src_h * scale)))
+
+        resized = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR)
+
+        pad_w = dst_w - resized_w
+        pad_h = dst_h - resized_h
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+
+        letterboxed = cv2.copyMakeBorder(
+            resized,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=(114, 114, 114),
+        )
+
+        meta = {
+            "src_w": src_w,
+            "src_h": src_h,
+            "scale": scale,
+            "pad_left": pad_left,
+            "pad_top": pad_top,
+        }
+        return letterboxed, meta
+
+    def _map_keypoints_to_source(self, kpts: np.ndarray, meta: dict) -> np.ndarray:
+        """
+        Convert keypoints from model input space back to original frame space.
+        """
+        mapped = kpts.astype(np.float32).copy()
+        scale = max(float(meta["scale"]), 1e-6)
+        pad_left = float(meta["pad_left"])
+        pad_top = float(meta["pad_top"])
+        src_w = float(meta["src_w"])
+        src_h = float(meta["src_h"])
+
+        mapped[:, 0] = (mapped[:, 0] - pad_left) / scale
+        mapped[:, 1] = (mapped[:, 1] - pad_top) / scale
+        mapped[:, 0] = np.clip(mapped[:, 0], 0, max(src_w - 1.0, 0.0))
+        mapped[:, 1] = np.clip(mapped[:, 1], 0, max(src_h - 1.0, 0.0))
+        return mapped
+
     def _allocate_io(self):
         """
         Allocate host/device buffers for all IO tensors.
@@ -158,8 +223,8 @@ class TensorRTBackend:
         # -----------------------------
         # 1) Preprocess (YOLO TRT)
         # -----------------------------
-        # Resize to model input
-        img = cv2.resize(img, (640, 640), interpolation=cv2.INTER_LINEAR)
+        input_h, input_w = self._input_hw()
+        img, transform_meta = self._letterbox(img, (input_h, input_w))
 
         # BGR -> RGB
         img = img[:, :, ::-1]
@@ -225,7 +290,7 @@ class TensorRTBackend:
         if output is None or output.size == 0:
             return np.empty((0, 17, 3), dtype=np.float32), None
 
-        # typically (1, N, 56)
+        # typically (1, N, 56) or (1, N, 57) depending on export layout
         if output.ndim == 3:
             dets = output[0]
         elif output.ndim == 2:
@@ -236,18 +301,29 @@ class TensorRTBackend:
 
         persons = []
         conf_threshold = 0.30
+        kpt_values = 17 * 3
 
         for det in dets:
-            # Guard: det length must be >= 6 + 17*3
-            if det.shape[0] < (6 + 17 * 3):
+            # Support common YOLO export layouts:
+            # [x,y,w,h,conf,cls,kpts...] or [x,y,w,h,conf,kpts...]
+            if det.shape[0] < (5 + kpt_values):
                 continue
 
             conf = float(det[4])
             if conf < conf_threshold:
                 continue
 
-            kpts = det[6:6 + 17 * 3].reshape(17, 3)
-            persons.append(kpts.astype(np.float32))
+            if det.shape[0] >= (6 + kpt_values):
+                kpt_start = 6
+            else:
+                kpt_start = 5
+
+            kpt_end = kpt_start + kpt_values
+            if det.shape[0] < kpt_end:
+                continue
+
+            kpts = det[kpt_start:kpt_end].reshape(17, 3)
+            persons.append(self._map_keypoints_to_source(kpts, transform_meta))
 
         if not persons:
             return np.empty((0, 17, 3), dtype=np.float32), None
