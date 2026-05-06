@@ -149,6 +149,11 @@ class PoseRecognition:
 
     @classmethod
     def create_human_detector(cls, preferred_model: str = "yolo26m.pt"):
+        try:
+            from inference.human_detector import HumanDetector
+        except Exception:
+            HumanDetector = None
+
         if HumanDetector is None:
             raise RuntimeError("Human detector module not available (inference/human_detector.py missing)")
         candidate_models = []
