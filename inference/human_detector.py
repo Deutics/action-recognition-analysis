@@ -33,7 +33,7 @@ class HumanDetector:
         self.iou_threshold = iou_threshold
         self.max_det = max_det
 
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, task="detect")
         self.device = self._resolve_device(model_path)
         logger.info(f"HumanDetector loaded: model={model_path}, device={self.device}")
 
