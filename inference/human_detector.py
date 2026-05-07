@@ -3,7 +3,7 @@ import platform
 from typing import List, Tuple
 
 import numpy as np
-from sympy.printing.pytorch import torch
+import torch
 from ultralytics import YOLO
 
 from utils.logger import get_logger

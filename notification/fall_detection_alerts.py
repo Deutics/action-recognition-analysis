@@ -45,6 +45,8 @@ from config.constants import (
     TWILIO_FROM_PHONE,
     TO_PHONE_NUMBERS,
     RIGGUARDIAN_WEBHOOK_URL,
+    ENABLE_SMS,
+    RUNTIME_ENV,
 )
 
 LOGGER = get_logger(__name__)
@@ -121,10 +123,14 @@ class FallDetectionAlerts:
         self.auth_token = TWILIO_AUTH_TOKEN
         self.from_phone = TWILIO_FROM_PHONE
         self.to_phones = _parse_phone_list(TO_PHONE_NUMBERS)
+        self.sms_enabled = ENABLE_SMS == "1"
         # --- webhook ---
         self.push_notification_url = RIGGUARDIAN_WEBHOOK_URL
 
-        self._validate_phone_numbers()
+        if self.sms_enabled:
+            self._validate_phone_numbers()
+        else:
+            LOGGER.info(f"SMS notifications disabled for runtime env '{RUNTIME_ENV}'")
 
         # --- settings ---
         self.cfg = AlertConfig()
@@ -133,7 +139,7 @@ class FallDetectionAlerts:
 
         # --- Twilio client ---
         self.client: Optional[Client] = None
-        if self.account_sid and self.auth_token:
+        if self.sms_enabled and self.account_sid and self.auth_token:
             try:
                 self.client = Client(self.account_sid, self.auth_token)
                 LOGGER.info("✅ Twilio client initialized")
@@ -141,7 +147,8 @@ class FallDetectionAlerts:
                 LOGGER.error(f"❌ Failed to initialize Twilio client: {e}", exc_info=True)
                 self.client = None
         else:
-            LOGGER.warning("⚠️ Twilio credentials missing; SMS sending will be disabled")
+            if self.sms_enabled:
+                LOGGER.warning("⚠️ Twilio credentials missing; SMS sending will be disabled")
 
         # --- HTTP session (reused) ---
         self._session: Optional[aiohttp.ClientSession] = None
@@ -309,7 +316,7 @@ class FallDetectionAlerts:
         Runs in a worker thread. Returns count of successful sends.
         """
         if self.client is None:
-            LOGGER.warning("Twilio client not initialized; skipping SMS")
+            LOGGER.info("Twilio client not initialized; skipping SMS")
             return 0
 
         success = 0

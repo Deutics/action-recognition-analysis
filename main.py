@@ -13,9 +13,14 @@ from pathlib import Path
 import ast
 
 from config.posture_config import PostureConfig
+from config.constants import (
+    STREAM_SOURCES_FILE_PATH,
+    POSE_MODEL_PATH,
+    HUMAN_DETECTOR_MODEL_PATH,
+)
+from inference.runtime_factory import InferenceRuntimeFactory
 from service.posture_recognition_service import PoseRecognition
 from utils.logger import get_logger
-from config.constants import STREAM_SOURCES_FILE_PATH
 
 
 logger = get_logger(__name__)
@@ -50,13 +55,15 @@ def parse_zone(stream_entry: Dict[str, Any]):
 
 
 async def run_all_streams(streams: List[Dict[str, Any]]):
-    shared_backend, backend_name = PoseRecognition.create_backend(
-        model_path="yolo26n-pose.pt",
+    shared_backend, backend_name = InferenceRuntimeFactory.create_pose_backend(
+        model_path=POSE_MODEL_PATH,
         use_tracking=False,
     )
     shared_human_detector = None
     try:
-        shared_human_detector = PoseRecognition.create_human_detector(preferred_model="yolo26m.pt")
+        shared_human_detector = InferenceRuntimeFactory.create_human_detector(
+            preferred_model=HUMAN_DETECTOR_MODEL_PATH
+        )
     except Exception as e:
         logger.warning(f"Shared human detector unavailable; fall alerts will be gated off: {e}")
     logger.info(f"Shared backend loaded once: {backend_name}")
@@ -66,7 +73,6 @@ async def run_all_streams(streams: List[Dict[str, Any]]):
         service = PoseRecognition(
             video_source=s["source"],
             source_id=s["source_id"],
-            model_path="yolo26n-pose.pt",
             config=PostureConfig(),
             confidence_threshold=0.5,
             normalized_zone_vertices=parse_zone(s),

@@ -12,8 +12,6 @@ Zone filtering:
 import cv2
 import numpy as np
 import asyncio
-import platform
-import os
 import time
 from typing import Optional, List, Tuple, Dict, Any
 
@@ -27,19 +25,6 @@ from tracking.person_tracker import PersonTracker
 from notification.notification_handler import NotificationHandler
 from utils.logger import get_logger
 
-from inference.torch_backend import TorchBackend
-try:
-    from inference.human_detector import HumanDetector
-except Exception:
-    HumanDetector = None
-
-try:
-    from inference.tensorrt_backend import TensorRTBackend
-    TRT_AVAILABLE = True
-except Exception:
-    TRT_AVAILABLE = False
-
-
 logger = get_logger(__name__)
 
 
@@ -48,7 +33,6 @@ class PoseRecognition:
         self,
         video_source: str,
         source_id: str,
-        model_path: str = "yolo26n-pose.pt",
         config: Optional[PostureConfig] = None,
         confidence_threshold: float = 0.5,
         infer_every_n_frames: int = 1,
@@ -57,7 +41,7 @@ class PoseRecognition:
         backend_name: Optional[str] = None,
         use_backend_track_ids: bool = True,
         reconnect_interval_sec: float = 5.0,
-        person_detector: Optional[HumanDetector] = None,
+        person_detector: Optional[Any] = None,
         person_box_overlap_threshold: float = 0.6,
     ):
         self.video_source = video_source
@@ -71,12 +55,10 @@ class PoseRecognition:
         self._zone_poly_px = None  # cached per resolution (np.int32 Nx1x2)
         self._zone_last_shape = None  # (h,w)
 
-        # Backend selection or injection
         if backend is None:
-            self.backend, self._backend_name = self.create_backend(model_path=model_path, use_tracking=True)
-        else:
-            self.backend = backend
-            self._backend_name = backend_name or type(backend).__name__
+            raise ValueError("PoseRecognition requires a constructed backend")
+        self.backend = backend
+        self._backend_name = backend_name or type(backend).__name__
 
         # In shared backend mode, backend-level track IDs are unsafe across streams
         self.use_backend_track_ids = use_backend_track_ids
@@ -120,73 +102,6 @@ class PoseRecognition:
             logger.info(f"Zone enabled with {len(self.normalized_zone_vertices)} vertices (normalized).")
         else:
             logger.warning("Zone NOT configured; notifications will trigger anywhere in frame.")
-
-    # ==========================================================
-    # Backend selection
-    # ==========================================================
-
-    @staticmethod
-    def _is_jetson() -> bool:
-        return os.path.exists("/etc/nv_tegra_release")
-
-    @classmethod
-    def create_backend(cls, model_path: str, use_tracking: bool = True):
-        # Mac -> CPU torch
-        if platform.system() == "Darwin":
-            logger.info("Using Torch backend (Mac)")
-            return TorchBackend(model_path, use_tracking=use_tracking), "torch"
-
-        # Jetson -> prefer TRT
-        if cls._is_jetson() and TRT_AVAILABLE:
-            engine_path = "yolo26n-pose_fp16.engine"
-            if os.path.exists(engine_path):
-                logger.info("Using TensorRT backend (Jetson)")
-                return TensorRTBackend(engine_path), "tensorrt"
-            logger.warning("TensorRT engine not found, falling back to Torch CPU")
-
-        logger.info("Using Torch backend (fallback)")
-        return TorchBackend(model_path, use_tracking=use_tracking), "torch"
-
-    @classmethod
-    def create_human_detector(cls, preferred_model: str = "yolo26m.pt"):
-        try:
-            from inference.human_detector import HumanDetector
-        except Exception:
-            HumanDetector = None
-
-        if HumanDetector is None:
-            raise RuntimeError("Human detector module not available (inference/human_detector.py missing)")
-        candidate_models = []
-
-        if cls._is_jetson():
-            candidate_models.extend([
-                "yolo26m_fp16.engine",
-                "yolo26m.engine",
-            ])
-
-        candidate_models.extend([
-            preferred_model,
-            "yolo26m.pt",
-            "yolo11m.pt",
-            "yolo11l.pt",
-            "yolo26m-pose.pt",  # last-resort fallback if detect model is unavailable
-        ])
-
-        seen = set()
-        ordered_candidates = []
-        for m in candidate_models:
-            if m not in seen:
-                seen.add(m)
-                ordered_candidates.append(m)
-
-        for model_path in ordered_candidates:
-            if os.path.exists(model_path):
-                logger.info(f"Using shared human detector model: {model_path}")
-                return HumanDetector(model_path=model_path)
-
-        raise FileNotFoundError(
-            "No human detector model found. Tried: " + ", ".join(ordered_candidates)
-        )
 
     # ==========================================================
     # Lifecycle
