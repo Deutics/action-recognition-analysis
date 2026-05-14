@@ -308,7 +308,7 @@ class PoseRecognition:
             self._fps_frames = 0
             self._fps_window_start = now
 
-            if (now - self._last_fps_log_ts) >= 60.0:
+            if (now - self._last_fps_log_ts) >= 600.0:
                 logger.info(f"[{self.source_id}] FPS={self._fps_value:.2f}")
                 self._last_fps_log_ts = now
 
