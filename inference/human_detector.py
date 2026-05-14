@@ -1,6 +1,6 @@
 import os
 import platform
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -40,8 +40,9 @@ class HumanDetector:
     @staticmethod
     def _resolve_device(model_path: str):
         if model_path.lower().endswith(".engine"):
-            # TensorRT runtime target; ultralytics handles this with device index.
-            return 0
+            # Let Ultralytics use the TensorRT engine backend directly without forcing
+            # a CUDA device through torch's device selection.
+            return None
 
         device = "cpu"
         device = "cuda" if torch.cuda.is_available() else device
@@ -55,15 +56,17 @@ class HumanDetector:
         if frame is None:
             return []
 
-        results = self.model.predict(
-            frame,
-            conf=self.conf_threshold,
-            iou=self.iou_threshold,
-            classes=[0],
-            max_det=self.max_det,
-            device=self.device,
-            verbose=False,
-        )
+        predict_kwargs: Dict[str, object] = {
+            "conf": self.conf_threshold,
+            "iou": self.iou_threshold,
+            "classes": [0],
+            "max_det": self.max_det,
+            "verbose": False,
+        }
+        if self.device is not None:
+            predict_kwargs["device"] = self.device
+
+        results = self.model.predict(frame, **predict_kwargs)
 
         if not results:
             return []
